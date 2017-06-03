@@ -146,6 +146,7 @@ EXTENDED_SCRIPTS = [
     'maxblocksinflight.py',
     'p2p-acceptblock.py',
     'replace-by-fee.py',
+    'p2p-dandelion.py',
 ]
 
 # Place EXTENDED_SCRIPTS first since it has the 3 longest running tests
