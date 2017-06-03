@@ -251,7 +251,7 @@ extern const char *D_INV;
 const std::vector<std::string> &getAllNetMessageTypes();
 
 /* Dandelion forwarding probability */
-const float DANDELION_PROB = strtof( std::getenv("DPROB") , NULL );
+extern const float DANDELION_PROB;
 
 /** nServices flags */
 enum ServiceFlags : uint64_t {

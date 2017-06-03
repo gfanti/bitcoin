@@ -12,6 +12,8 @@
 # include <arpa/inet.h>
 #endif
 
+const float DANDELION_PROB = strtof( std::getenv("DPROB") ? std::getenv("DPROB") : "0", NULL ); // FIXME
+
 namespace NetMsgType {
 const char *VERSION="version";
 const char *VERACK="verack";
