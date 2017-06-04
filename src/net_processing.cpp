@@ -1170,6 +1170,158 @@ uint32_t GetFetchFlags(CNode* pfrom) {
     return nFetchFlags;
 }
 
+void static ProcessTransaction(CNode* pfrom, CConnman& connman, CTransactionRef& ptx, CValidationState& state)
+{
+    AssertLockHeld(cs_main);
+    std::deque<COutPoint> vWorkQueue;
+    std::vector<uint256> vEraseQueue;
+    std::list<CTransactionRef> lRemovedTxn;
+    bool fMissingInputs = false;
+    const CTransaction& tx = *ptx;
+    CInv inv(MSG_TX, tx.GetHash());
+
+    if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
+	mempool.check(pcoinsTip);
+	RelayTransaction(tx, connman);
+	for (unsigned int i = 0; i < tx.vout.size(); i++) {
+	    vWorkQueue.emplace_back(inv.hash, i);
+	}
+
+	pfrom->nLastTXTime = GetTime();
+
+	LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
+		 pfrom->GetId(),
+		 tx.GetHash().ToString(),
+		 mempool.size(), mempool.DynamicMemoryUsage() / 1000);
+
+	// Recursively process any orphan transactions that depended on this one
+	std::set<NodeId> setMisbehaving;
+	while (!vWorkQueue.empty()) {
+	    auto itByPrev = mapOrphanTransactionsByPrev.find(vWorkQueue.front());
+	    vWorkQueue.pop_front();
+	    if (itByPrev == mapOrphanTransactionsByPrev.end())
+		continue;
+	    for (auto mi = itByPrev->second.begin();
+		 mi != itByPrev->second.end();
+		 ++mi)
+	    {
+		const CTransactionRef& porphanTx = (*mi)->second.tx;
+		const CTransaction& orphanTx = *porphanTx;
+		const uint256& orphanHash = orphanTx.GetHash();
+		NodeId fromPeer = (*mi)->second.fromPeer;
+		bool fMissingInputs2 = false;
+		// Use a dummy CValidationState so someone can't setup nodes to counter-DoS based on orphan
+		// resolution (that is, feeding people an invalid transaction based on LegitTxX in order to get
+		// anyone relaying LegitTxX banned)
+		CValidationState stateDummy;
+
+
+		if (setMisbehaving.count(fromPeer))
+		    continue;
+		if (AcceptToMemoryPool(mempool, stateDummy, porphanTx, true, &fMissingInputs2, &lRemovedTxn)) {
+		    LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
+		    RelayTransaction(orphanTx, connman);
+		    for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
+			vWorkQueue.emplace_back(orphanHash, i);
+		    }
+		    vEraseQueue.push_back(orphanHash);
+		}
+		else if (!fMissingInputs2)
+		{
+		    int nDos = 0;
+		    if (stateDummy.IsInvalid(nDos) && nDos > 0)
+		    {
+			// Punish peer that gave us an invalid orphan tx
+			Misbehaving(fromPeer, nDos);
+			setMisbehaving.insert(fromPeer);
+			LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s\n", orphanHash.ToString());
+		    }
+		    // Has inputs but not accepted to mempool
+		    // Probably non-standard or insufficient fee
+		    LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
+		    vEraseQueue.push_back(orphanHash);
+		    if (!orphanTx.HasWitness() && !stateDummy.CorruptionPossible()) {
+			// Do not use rejection cache for witness transactions or
+			// witness-stripped transactions, as they can have been malleated.
+			// See https://github.com/bitcoin/bitcoin/issues/8279 for details.
+			assert(recentRejects);
+			recentRejects->insert(orphanHash);
+		    }
+		}
+		mempool.check(pcoinsTip);
+	    }
+	}
+
+	BOOST_FOREACH(uint256 hash, vEraseQueue)
+	    EraseOrphanTx(hash);
+    }
+    else if (fMissingInputs)
+    {
+	bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
+	BOOST_FOREACH(const CTxIn& txin, tx.vin) {
+	    if (recentRejects->contains(txin.prevout.hash)) {
+		fRejectedParents = true;
+		break;
+	    }
+	}
+	if (!fRejectedParents) {
+	    uint32_t nFetchFlags = GetFetchFlags(pfrom);
+	    BOOST_FOREACH(const CTxIn& txin, tx.vin) {
+		CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
+		pfrom->AddInventoryKnown(_inv);
+		if (!AlreadyHave(_inv)) pfrom->AskFor(_inv);
+	    }
+	    AddOrphanTx(ptx, pfrom->GetId());
+
+	    // DoS prevention: do not allow mapOrphanTransactions to grow unbounded
+	    unsigned int nMaxOrphanTx = (unsigned int)std::max((int64_t)0, GetArg("-maxorphantx", DEFAULT_MAX_ORPHAN_TRANSACTIONS));
+	    unsigned int nEvicted = LimitOrphanTxSize(nMaxOrphanTx);
+	    if (nEvicted > 0) {
+		LogPrint(BCLog::MEMPOOL, "mapOrphan overflow, removed %u tx\n", nEvicted);
+	    }
+	} else {
+	    LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx.GetHash().ToString());
+	    // We will continue to reject this tx since it has rejected
+	    // parents so avoid re-requesting it from other peers.
+	    recentRejects->insert(tx.GetHash());
+	}
+    } else {
+	if (!tx.HasWitness() && !state.CorruptionPossible()) {
+	    // Do not use rejection cache for witness transactions or
+	    // witness-stripped transactions, as they can have been malleated.
+	    // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
+	    assert(recentRejects);
+	    recentRejects->insert(tx.GetHash());
+	    if (RecursiveDynamicUsage(*ptx) < 100000) {
+		AddToCompactExtraTransactions(ptx);
+	    }
+	} else if (tx.HasWitness() && RecursiveDynamicUsage(*ptx) < 100000) {
+	    AddToCompactExtraTransactions(ptx);
+	}
+
+	if (pfrom->fWhitelisted && GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY)) {
+	    // Always relay transactions received from whitelisted peers, even
+	    // if they were already in the mempool or rejected from it due
+	    // to policy, allowing the node to function as a gateway for
+	    // nodes hidden behind it.
+	    //
+	    // Never relay transactions that we would assign a non-zero DoS
+	    // score for, as we expect peers to do the same with us in that
+	    // case.
+	    int nDoS = 0;
+	    if (!state.IsInvalid(nDoS) || nDoS == 0) {
+		LogPrintf("Force relaying tx %s from whitelisted peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
+		RelayTransaction(tx, connman);
+	    } else {
+		LogPrintf("Not relaying invalid transaction %s from whitelisted peer=%d (%s)\n", tx.GetHash().ToString(), pfrom->GetId(), FormatStateMessage(state));
+	    }
+	}
+    }
+
+    for (const CTransactionRef& removedTx : lRemovedTxn)
+	AddToCompactExtraTransactions(removedTx);
+}
+
 inline void static SendBlockTransactions(const CBlock& block, const BlockTransactionsRequest& req, CNode* pfrom, CConnman& connman) {
     BlockTransactions resp(req);
     for (size_t i = 0; i < req.indexes.size(); i++) {
@@ -1792,8 +1944,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return true;
         }
 
-        std::deque<COutPoint> vWorkQueue;
-        std::vector<uint256> vEraseQueue;
         CTransactionRef ptx;
         vRecv >> ptx;
         const CTransaction& tx = *ptx;
@@ -1803,154 +1953,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         LOCK(cs_main);
 
-        bool fMissingInputs = false;
         CValidationState state;
 
         pfrom->setAskFor.erase(inv.hash);
         mapAlreadyAskedFor.erase(inv.hash);
 
-        std::list<CTransactionRef> lRemovedTxn;
-
-        if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
-            mempool.check(pcoinsTip);
-            RelayTransaction(tx, connman);
-            for (unsigned int i = 0; i < tx.vout.size(); i++) {
-                vWorkQueue.emplace_back(inv.hash, i);
-            }
-
-            pfrom->nLastTXTime = GetTime();
-
-            LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
-                pfrom->GetId(),
-                tx.GetHash().ToString(),
-                mempool.size(), mempool.DynamicMemoryUsage() / 1000);
-
-            // Recursively process any orphan transactions that depended on this one
-            std::set<NodeId> setMisbehaving;
-            while (!vWorkQueue.empty()) {
-                auto itByPrev = mapOrphanTransactionsByPrev.find(vWorkQueue.front());
-                vWorkQueue.pop_front();
-                if (itByPrev == mapOrphanTransactionsByPrev.end())
-                    continue;
-                for (auto mi = itByPrev->second.begin();
-                     mi != itByPrev->second.end();
-                     ++mi)
-                {
-                    const CTransactionRef& porphanTx = (*mi)->second.tx;
-                    const CTransaction& orphanTx = *porphanTx;
-                    const uint256& orphanHash = orphanTx.GetHash();
-                    NodeId fromPeer = (*mi)->second.fromPeer;
-                    bool fMissingInputs2 = false;
-                    // Use a dummy CValidationState so someone can't setup nodes to counter-DoS based on orphan
-                    // resolution (that is, feeding people an invalid transaction based on LegitTxX in order to get
-                    // anyone relaying LegitTxX banned)
-                    CValidationState stateDummy;
-
-
-                    if (setMisbehaving.count(fromPeer))
-                        continue;
-                    if (AcceptToMemoryPool(mempool, stateDummy, porphanTx, true, &fMissingInputs2, &lRemovedTxn)) {
-                        LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
-                        RelayTransaction(orphanTx, connman);
-                        for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
-                            vWorkQueue.emplace_back(orphanHash, i);
-                        }
-                        vEraseQueue.push_back(orphanHash);
-                    }
-                    else if (!fMissingInputs2)
-                    {
-                        int nDos = 0;
-                        if (stateDummy.IsInvalid(nDos) && nDos > 0)
-                        {
-                            // Punish peer that gave us an invalid orphan tx
-                            Misbehaving(fromPeer, nDos);
-                            setMisbehaving.insert(fromPeer);
-                            LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s\n", orphanHash.ToString());
-                        }
-                        // Has inputs but not accepted to mempool
-                        // Probably non-standard or insufficient fee
-                        LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
-                        vEraseQueue.push_back(orphanHash);
-                        if (!orphanTx.HasWitness() && !stateDummy.CorruptionPossible()) {
-                            // Do not use rejection cache for witness transactions or
-                            // witness-stripped transactions, as they can have been malleated.
-                            // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
-                            assert(recentRejects);
-                            recentRejects->insert(orphanHash);
-                        }
-                    }
-                    mempool.check(pcoinsTip);
-                }
-            }
-
-            BOOST_FOREACH(uint256 hash, vEraseQueue)
-                EraseOrphanTx(hash);
-        }
-        else if (fMissingInputs)
-        {
-            bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
-            BOOST_FOREACH(const CTxIn& txin, tx.vin) {
-                if (recentRejects->contains(txin.prevout.hash)) {
-                    fRejectedParents = true;
-                    break;
-                }
-            }
-            if (!fRejectedParents) {
-                uint32_t nFetchFlags = GetFetchFlags(pfrom);
-                BOOST_FOREACH(const CTxIn& txin, tx.vin) {
-                    CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
-                    pfrom->AddInventoryKnown(_inv);
-                    if (!AlreadyHave(_inv)) pfrom->AskFor(_inv);
-                }
-                AddOrphanTx(ptx, pfrom->GetId());
-
-                // DoS prevention: do not allow mapOrphanTransactions to grow unbounded
-                unsigned int nMaxOrphanTx = (unsigned int)std::max((int64_t)0, GetArg("-maxorphantx", DEFAULT_MAX_ORPHAN_TRANSACTIONS));
-                unsigned int nEvicted = LimitOrphanTxSize(nMaxOrphanTx);
-                if (nEvicted > 0) {
-                    LogPrint(BCLog::MEMPOOL, "mapOrphan overflow, removed %u tx\n", nEvicted);
-                }
-            } else {
-                LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx.GetHash().ToString());
-                // We will continue to reject this tx since it has rejected
-                // parents so avoid re-requesting it from other peers.
-                recentRejects->insert(tx.GetHash());
-            }
-        } else {
-            if (!tx.HasWitness() && !state.CorruptionPossible()) {
-                // Do not use rejection cache for witness transactions or
-                // witness-stripped transactions, as they can have been malleated.
-                // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
-                assert(recentRejects);
-                recentRejects->insert(tx.GetHash());
-                if (RecursiveDynamicUsage(*ptx) < 100000) {
-                    AddToCompactExtraTransactions(ptx);
-                }
-            } else if (tx.HasWitness() && RecursiveDynamicUsage(*ptx) < 100000) {
-                AddToCompactExtraTransactions(ptx);
-            }
-
-            if (pfrom->fWhitelisted && GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY)) {
-                // Always relay transactions received from whitelisted peers, even
-                // if they were already in the mempool or rejected from it due
-                // to policy, allowing the node to function as a gateway for
-                // nodes hidden behind it.
-                //
-                // Never relay transactions that we would assign a non-zero DoS
-                // score for, as we expect peers to do the same with us in that
-                // case.
-                int nDoS = 0;
-                if (!state.IsInvalid(nDoS) || nDoS == 0) {
-                    LogPrintf("Force relaying tx %s from whitelisted peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
-                    RelayTransaction(tx, connman);
-                } else {
-                    LogPrintf("Not relaying invalid transaction %s from whitelisted peer=%d (%s)\n", tx.GetHash().ToString(), pfrom->GetId(), FormatStateMessage(state));
-                }
-            }
-        }
-
-        for (const CTransactionRef& removedTx : lRemovedTxn)
-            AddToCompactExtraTransactions(removedTx);
+	// Attempt to add the transaction to mempool
+	ProcessTransaction(pfrom, connman, ptx, state);
 
         int nDoS = 0;
         if (state.IsInvalid(nDoS))
