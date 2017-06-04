@@ -2746,10 +2746,13 @@ void CNode::AskFor(const CInv& inv)
 
     // Each retry is 2 minutes after the last
     nRequestTime = std::max(nRequestTime + 2 * 60 * 1000000, nNow);
-    if (it != mapAlreadyAskedFor.end())
-        mapAlreadyAskedFor.update(it, nRequestTime);
-    else
-        mapAlreadyAskedFor.insert(std::make_pair(inv.hash, nRequestTime));
+    if (inv.type != MSG_DANDELION_TX && inv.type != MSG_WITNESS_DANDELION_TX) {
+	// Bypass the queue for dandelion transactions
+	if (it != mapAlreadyAskedFor.end())
+	    mapAlreadyAskedFor.update(it, nRequestTime);
+	else
+	    mapAlreadyAskedFor.insert(std::make_pair(inv.hash, nRequestTime));
+    }
     mapAskFor.insert(std::make_pair(nRequestTime, inv));
 }
 
@@ -2823,3 +2826,5 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& ad) const
 
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(&vchNetGroup[0], vchNetGroup.size()).Finalize();
 }
+
+extern void RelayTransactionDandelion(const CTransaction& tx, CConnman* connman);

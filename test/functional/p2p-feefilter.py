@@ -29,7 +29,7 @@ class TestNode(NodeConnCB):
 
     def on_inv(self, conn, message):
         for i in message.inv:
-            if (i.type == 1):
+            if (i.type == 1 or i.type == 5):
                 self.txinvs.append(hashToHex(i.hash))
 
     def clear_invs(self):
@@ -86,6 +86,7 @@ class FeeFilterTest(BitcoinTestFramework):
         node0.settxfee(Decimal("0.00020000"))
         txids = [node0.sendtoaddress(node0.getnewaddress(), 1)]
         assert(allInvsMatch(txids, test_node))
+        time.sleep(10) # dandelion inv messages may still settle here
         test_node.clear_invs()
 
         # Remove fee filter and check that txs are received again
