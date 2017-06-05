@@ -638,6 +638,9 @@ public:
     // Set of transaction ids we still have to announce.
     // They are sorted by the mempool before relay, so the order is not important.
     std::set<uint256> setInventoryTxToSend;
+    // Dandelion asked-for messages
+    std::set<uint256> setDandelionOffered;
+    std::set<uint256> setDandelionAskFor;
     // List of block ids we still have announce.
     // There is no final sorting before sending, as they are always sent immediately
     // and in the order requested.
@@ -778,10 +781,13 @@ public:
     void PushInventory(const CInv& inv)
     {
         LOCK(cs_inventory);
-        if (inv.type == MSG_TX) {
+        if (inv.type == MSG_TX || inv.type == MSG_DANDELION_TX) {
             if (!filterInventoryKnown.contains(inv.hash)) {
                 setInventoryTxToSend.insert(inv.hash);
             }
+	    if (inv.type == MSG_DANDELION_TX) {
+		setDandelionOffered.insert(inv.hash);
+	    }
         } else if (inv.type == MSG_BLOCK) {
             vInventoryBlockToSend.push_back(inv.hash);
         }
@@ -815,5 +821,7 @@ public:
 
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
 int64_t PoissonNextSend(int64_t nNow, int average_interval_seconds);
+
+void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman);
 
 #endif // BITCOIN_NET_H
