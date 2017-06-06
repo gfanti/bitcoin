@@ -23,27 +23,76 @@ class TestNode(NodeConnCB):
     def __init__(self):
         super().__init__()
 
+# TODO: Test cases to add:
+"""
+1. Robustness
+   A --[stem]--> TestNode
+   TestNode ignores for a minute
+
+ Expect:
+   A --[fluff]-> TestNode
+
+2. Resistant to active probing
+   A --[stem]--> B
+   A <--getdata--- TestNode
+ Expect:
+     No inv to A
+     A --notfound--> TestNode
+
+3. Simulated orphan handling
+   A --[stem]{tx1,tx2}--> B --[stem]{tx1,tx2}--> TestNode
+   A <--{tx2}-- TestNode
+
+ Expect:
+   A --getdata{tx1}--> TestNode
+
+4. A limitation that allows a spy to distinguish the sender
+
+   A --[stem]{tx1}--> B --[stem]{tx1}--> TestNode
+  TestNode creates an invalid transaction tx2* that spends tx1
+   A <--getdata{00000}-- TestNode
+   A <--{tx2*}-- TestNode
+
+ Expect:
+   A disconnects TestNode2 immediately
+ If A did not actually have tx1, then instead we'd expect:
+   A --notfound--> TestNode
+   then later disconnect
+"""
+
+
 class DandelionTest(BitcoinTestFramework):
 
     def __init__(self):
         super().__init__()
-        self.num_nodes = 4
+        self.num_nodes = 5
         self.setup_clean_chain = False
 
     def setup_network(self):
         self.setup_nodes()
         connect_nodes(self.nodes[0], 1)
+        connect_nodes(self.nodes[0], 2)
+        connect_nodes(self.nodes[0], 3)
+        connect_nodes(self.nodes[0], 4)
         connect_nodes(self.nodes[1], 2)
-        connect_nodes(self.nodes[1], 3)
+        connect_nodes(self.nodes[2], 3)
+        connect_nodes(self.nodes[1], 4)
+
+        # Intended communication pattern!
+        # 0 --[stem]--> 1 --[stem] --> 2 --[stem]--> 3
+        #                              2 <-[fluff]-- 3
+        #               1 <-[fluff]--  2
+        #               1 --[fluff]---------------------> 4
 
     def run_test(self):
         node0 = self.nodes[0]
         node1 = self.nodes[1]
         node2 = self.nodes[2]
         node3 = self.nodes[3]
+        node4 = self.nodes[4]
 
         # Get out of IBD
-        node1.generate(1)
+        node0.generate(1)
         sync_blocks(self.nodes)
         
         # Setup the p2p connections and start up the network thread.
@@ -58,7 +107,7 @@ class DandelionTest(BitcoinTestFramework):
 
         txids = [node0.sendtoaddress(node0.getnewaddress(), 1) for x in range(30)]
 
-        time.sleep(10)
+        time.sleep(20)
 
         [ c.disconnect_node() for c in connections ]
 
