@@ -17,11 +17,9 @@ def hashToHex(hash):
 def allInvsMatch(invsExpected, testnode):
     for x in range(60):
         with mininode_lock:
-            print('invsExpected:', sorted(invsExpected))
-            print('testnode.txinvs:', sorted(testnode.txinvs))
             if (sorted(invsExpected) == sorted(testnode.txinvs)):
                 return True
-        time.sleep(5)
+        time.sleep(1)
     return False
 
 class TestNode(NodeConnCB):
@@ -88,6 +86,7 @@ class FeeFilterTest(BitcoinTestFramework):
         node0.settxfee(Decimal("0.00020000"))
         txids = [node0.sendtoaddress(node0.getnewaddress(), 1)]
         assert(allInvsMatch(txids, test_node))
+        time.sleep(10) # dandelion inv messages may still settle here
         test_node.clear_invs()
 
         # Remove fee filter and check that txs are received again
