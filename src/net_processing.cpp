@@ -1005,7 +1005,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman) {
                          txin.prevout.hash.ToString());
                 fEmbargoedParent = true;
                 if (itEmbargo->second.itExpire != mapEmbargoExpire.end()) {
-                    parentEmbargoTime = std::max(parentEmbargoTime, itEmbargo->second.itExpire->first);
+                    parentEmbargoTime = std::max(parentEmbargoTime+1, itEmbargo->second.itExpire->first);
                 } else
                     LogPrint(BCLog::NET, "assertion failed: no embargo time for parent %s\n", txin.prevout.hash.ToString());
             }
