@@ -17,6 +17,8 @@ def hashToHex(hash):
 def allInvsMatch(invsExpected, testnode):
     for x in range(60):
         with mininode_lock:
+            print('invsExpected:', sorted(invsExpected))
+            print('testnode.txinvs:', sorted(testnode.txinvs))
             if (sorted(invsExpected) == sorted(testnode.txinvs)):
                 return True
         time.sleep(1)
@@ -29,7 +31,7 @@ class TestNode(NodeConnCB):
 
     def on_inv(self, conn, message):
         for i in message.inv:
-            if (i.type == 1):
+            if (i.type == 1 or i.type == 5):
                 self.txinvs.append(hashToHex(i.hash))
 
     def clear_invs(self):
@@ -42,6 +44,10 @@ class FeeFilterTest(BitcoinTestFramework):
         super().__init__()
         self.num_nodes = 2
         self.setup_clean_chain = False
+
+    def setup_network(self):
+        self.setup_nodes()
+        connect_nodes(self.nodes[1], 0)
 
     def run_test(self):
         node1 = self.nodes[1]
