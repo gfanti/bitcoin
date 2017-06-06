@@ -234,8 +234,6 @@ struct CNodeState {
     }
 };
 
-static const float DANDELION_PROB = strtof( std::getenv("DPROB") ? std::getenv("DPROB") : "0.1", NULL ); // FIXME
-
 /** Map maintaining per-node state. Requires cs_main. */
 std::map<NodeId, CNodeState> mapNodeState;
 
@@ -1015,8 +1013,9 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman) {
     }
 
     if (stemNode && !fEmbargoedParent) {
+        int64_t dand_prob = GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT);
         float rand_prob = ((float) rand() / (float) RAND_MAX);
-        fCoinflip = (rand_prob > DANDELION_PROB);
+        fCoinflip = (rand_prob * 100 < dand_prob);
         LogPrint(BCLog::NET, "Coin flip was %s for transaction hash=%s\n", fCoinflip,
                  hash.ToString());
     }
@@ -1242,7 +1241,7 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                     if (!fEmbargoed)
                         connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
                     else if (pfrom->GetId() == embargo->second.stemId)
-                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::DANDELIONTX, *mi->second));
+                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, pfrom->isDandelion() ? NetMsgType::DANDELIONTX : NetMsgType::TX, *mi->second));
                     else
                         push = false;
                 } else if (!fEmbargoed && pfrom->timeLastMempoolReq) {
@@ -3327,7 +3326,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                     if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     // Send
                     auto itEmbargo = mapEmbargo.find(hash);
-                    if (itEmbargo != mapEmbargo.end() && pto->GetId() == itEmbargo->second.stemId)
+                    if (pto->isDandelion() && itEmbargo != mapEmbargo.end() && pto->GetId() == itEmbargo->second.stemId)
                         vInv.push_back(CInv(MSG_DANDELION_TX, hash));
                     else
                         vInv.push_back(CInv(MSG_TX, hash));

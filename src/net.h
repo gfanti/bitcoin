@@ -86,6 +86,8 @@ static const bool DEFAULT_FORCEDNSSEED = false;
 static const size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
 static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
+static const int64_t DEFAULT_DANDELION_PROB_PCT  = 90;
+
 static const ServiceFlags REQUIRED_SERVICES = NODE_NETWORK;
 
 // NOTE: When adjusting this, update rpcnet:setban's help ("24h")
@@ -812,7 +814,7 @@ public:
 
     inline bool isDandelion() const
     {
-        return true; // GetLocalServices() & NODE_DANDELION;
+        return nServices & NODE_DANDELION;
     }
 };
 

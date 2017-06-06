@@ -69,11 +69,10 @@ class DandelionTest(BitcoinTestFramework):
         self.setup_clean_chain = False
 
     def setup_network(self):
+        self.extra_args = [[]]*4 + [["-dandelion=0"]]
+        #self.extra_args = [["-dandelion=1"]] +[["-dandelion=0"]]*4
         self.setup_nodes()
         connect_nodes(self.nodes[0], 1)
-        connect_nodes(self.nodes[0], 2)
-        connect_nodes(self.nodes[0], 3)
-        connect_nodes(self.nodes[0], 4)
         connect_nodes(self.nodes[1], 2)
         connect_nodes(self.nodes[2], 3)
         connect_nodes(self.nodes[1], 4)
@@ -92,22 +91,20 @@ class DandelionTest(BitcoinTestFramework):
         node4 = self.nodes[4]
 
         # Get out of IBD
-        node0.generate(1)
-        sync_blocks(self.nodes)
-        
+        [ n.generate(1) for n in self.nodes ]
+
         # Setup the p2p connections and start up the network thread.
         test_node = TestNode()
         connections = []
         connections.append(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], test_node))
-        
+
         NetworkThread().start()
         test_node.wait_for_verack()
 
         self.log.info('Node1.balance %d' % (node1.getbalance(),))
-
         txids = [node0.sendtoaddress(node0.getnewaddress(), 1) for x in range(30)]
 
-        time.sleep(20)
+        time.sleep(40)
 
         [ c.disconnect_node() for c in connections ]
 
