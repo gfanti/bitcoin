@@ -21,7 +21,7 @@ def allInvsMatch(invsExpected, testnode):
             print('testnode.txinvs:', sorted(testnode.txinvs))
             if (sorted(invsExpected) == sorted(testnode.txinvs)):
                 return True
-        time.sleep(1)
+        time.sleep(5)
     return False
 
 class TestNode(NodeConnCB):
@@ -44,10 +44,6 @@ class FeeFilterTest(BitcoinTestFramework):
         super().__init__()
         self.num_nodes = 2
         self.setup_clean_chain = False
-
-    def setup_network(self):
-        self.setup_nodes()
-        connect_nodes(self.nodes[1], 0)
 
     def run_test(self):
         node1 = self.nodes[1]
