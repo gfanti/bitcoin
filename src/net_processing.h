@@ -21,6 +21,10 @@ static const unsigned int DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN = 100;
  *  Timeout = base + per_header * (expected number of headers) */
 static constexpr int64_t HEADERS_DOWNLOAD_TIMEOUT_BASE = 15 * 60 * 1000000; // 15 minutes
 static constexpr int64_t HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 1000; // 1ms/header
+/** Fixed delay for Dandelion embargo in seconds */
+static const int64_t EMBARGO_FIXED_DELAY = 10;
+/** Mean delay for Dandelion embargo in seconds, after the fixed delay */
+static const int64_t EMBARGO_MEAN_DELAY = 30;
 
 /** Register with a network node to receive its signals */
 void RegisterNodeSignals(CNodeSignals& nodeSignals);

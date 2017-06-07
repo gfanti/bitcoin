@@ -240,6 +240,11 @@ extern const char *GETBLOCKTXN;
  * @since protocol version 70014 as described by BIP 152
  */
 extern const char *BLOCKTXN;
+/**
+ * Contains a transaction propagating as a dandelion stem
+ * Sent in response to a "getdata" message.
+ */
+extern const char *DANDELIONTX;
 };
 
 /* Get a vector of all valid message types (see above) */
@@ -275,6 +280,7 @@ enum ServiceFlags : uint64_t {
     // collisions and other cases where nodes may be advertising a service they
     // do not actually support. Other service bits should be allocated via the
     // BIP process.
+    NODE_DANDELION = (1 << 24),
 };
 
 /** A CService with information about it as peer */
@@ -329,8 +335,10 @@ enum GetDataMsg
     // The following can only occur in getdata. Invs always use TX or BLOCK.
     MSG_FILTERED_BLOCK = 3,  //!< Defined in BIP37
     MSG_CMPCT_BLOCK = 4,     //!< Defined in BIP152
+    MSG_DANDELION_TX = 5,    //!< DANDELION
     MSG_WITNESS_BLOCK = MSG_BLOCK | MSG_WITNESS_FLAG, //!< Defined in BIP144
     MSG_WITNESS_TX = MSG_TX | MSG_WITNESS_FLAG,       //!< Defined in BIP144
+    MSG_WITNESS_DANDELION_TX = MSG_DANDELION_TX | MSG_WITNESS_FLAG, //!< DANDELION
     MSG_FILTERED_WITNESS_BLOCK = MSG_FILTERED_BLOCK | MSG_WITNESS_FLAG,
 };
 
