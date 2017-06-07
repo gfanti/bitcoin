@@ -69,14 +69,11 @@ class DandelionTest(BitcoinTestFramework):
         self.setup_clean_chain = False
 
     def setup_network(self):
-        #self.extra_args = [["-whitelist=127.0.0.1"]]*4 + [["-whitelist=127.0.0.1","-dandelion=0"]]
-        self.extra_args = [[]]*4 + [["-dandelion=0"]]
+        self.extra_args = [["-whitelist=127.0.0.1"]]*4 + [["-whitelist=127.0.0.1","-dandelion=0"]]
+        #self.extra_args = [[]]*4 + [["-dandelion=0"]]
         #self.extra_args = [["-dandelion=1"]] +[["-dandelion=0"]]*4
         self.setup_nodes()
         connect_nodes(self.nodes[0], 1)
-        connect_nodes(self.nodes[0], 2)
-        connect_nodes(self.nodes[0], 3)
-        connect_nodes(self.nodes[0], 4)
         connect_nodes(self.nodes[1], 2)
         connect_nodes(self.nodes[2], 3)
         connect_nodes(self.nodes[1], 4)

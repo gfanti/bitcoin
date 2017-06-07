@@ -968,7 +968,7 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
     });
 }
 
-void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman)
+void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId nFrom)
 {
     uint256 hash = tx.GetHash();
 
@@ -980,10 +980,16 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman)
 
     LOCK(cs_main);
 
-    if (vStemNodes.empty()) {
+    // Do not consider the sender
+    std::vector<NodeId> vStemNodesExceptSender;
+    std::copy_if(vStemNodes.begin(), vStemNodes.end(), std::back_inserter(vStemNodesExceptSender), [nFrom](NodeId id){return id != nFrom;} );
+
+    if (vStemNodesExceptSender.empty()) {
         RelayTransaction(tx, connman);
         return;
     }
+
+    
 
     // Does this transaction depend on any embargoed transactions?
     BOOST_FOREACH(const CTxIn& txin, tx.vin) {
@@ -1010,7 +1016,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman)
 
     if (fEmbargoedParent || fCoinflip) {
         // TODO: better rand()
-        nStemId = vStemNodes[rand() % vStemNodes.size()];
+        nStemId = vStemNodesExceptSender[rand() % vStemNodesExceptSender.size()];
 
         // TODO: exponential time embargo
         int64_t nNow = GetTimeMicros();
@@ -1948,7 +1954,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         else if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
             mempool.check(pcoinsTip);
             if (fIsDandelion)
-                RelayTransactionDandelion(tx, connman);
+                RelayTransactionDandelion(tx, connman, pfrom->GetId());
             else
                 RelayTransaction(tx, connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
@@ -1992,7 +1998,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                         if (fOrphanEmbargo) {
                             assert(mapEmbargo.find(orphanHash)->second.itExpire == mapEmbargoExpire.end());
                             mapEmbargo.erase(orphanHash);
-                            RelayTransactionDandelion(orphanTx, connman);
+                            RelayTransactionDandelion(orphanTx, connman, fromPeer);
                         } else
                             RelayTransaction(orphanTx, connman);
                         for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
@@ -2093,7 +2099,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 if (!state.IsInvalid(nDoS) || nDoS == 0) {
                     LogPrintf("Force relaying tx %s from whitelisted peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
                     if (fIsDandelion)
-                        RelayTransactionDandelion(tx, connman);
+                        RelayTransactionDandelion(tx, connman, pfrom->GetId());
                     else
                         RelayTransaction(tx, connman);
                 } else {

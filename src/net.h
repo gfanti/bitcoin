@@ -825,6 +825,6 @@ public:
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
 int64_t PoissonNextSend(int64_t nNow, int average_interval_seconds);
 
-void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman);
+void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId from);
 
 #endif // BITCOIN_NET_H
