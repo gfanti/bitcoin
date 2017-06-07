@@ -1007,18 +1007,14 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
 
     if (!fEmbargoedParent) {
         int64_t dand_prob = GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT);
-        // TODO: better rand()
-        float rand_prob = ((float) rand() / (float) RAND_MAX);
-        fCoinflip = (rand_prob * 100 < dand_prob);
+        fCoinflip = GetRand(100) < dand_prob;
         LogPrint(BCLog::NET, "Coin flip was %s for transaction hash=%s\n", fCoinflip,
                  hash.ToString());
     }
 
     if (fEmbargoedParent || fCoinflip) {
-        // TODO: better rand()
-        nStemId = vStemNodesExceptSender[rand() % vStemNodesExceptSender.size()];
+        nStemId = vStemNodesExceptSender[GetRand(vStemNodesExceptSender.size())];
 
-        // TODO: exponential time embargo
         int64_t nNow = GetTimeMicros();
         int64_t embargoTime = PoissonNextSend(nNow, EMBARGO_MEAN_DELAY) + EMBARGO_FIXED_DELAY * 1000000; 
         embargoTime = std::max(embargoTime, parentEmbargoTime+1);
@@ -3224,8 +3220,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
             }
             vStemNodes.clear();
             for (int i = 0; i < 2 && !candidates.empty(); i++) {
-                // TODO: better rand()
-                std::swap(candidates[rand() % candidates.size()],
+                std::swap(candidates[GetRand(candidates.size())],
                           candidates.back());
                 vStemNodes.push_back(candidates.back());
                 candidates.pop_back();
