@@ -1014,7 +1014,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman)
 
         // TODO: exponential time embargo
         int64_t nNow = GetTimeMicros();
-        int64_t embargoTime = nNow + 30 * 1000000; // Embargo lasts 30 seconds
+        int64_t embargoTime = PoissonNextSend(nNow, EMBARGO_MEAN_DELAY) + EMBARGO_FIXED_DELAY * 1000000; 
         embargoTime = std::max(embargoTime, parentEmbargoTime+1);
         auto it = mapEmbargoExpire.insert(std::make_pair(embargoTime, hash));
         CDandelionEmbargo emb = { it, nStemId };
