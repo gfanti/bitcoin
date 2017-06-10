@@ -1018,6 +1018,27 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
     if (fEmbargoedParent || fCoinflip) {
         nStemId = vStemNodesExceptSender[GetRand(vStemNodesExceptSender.size())];
 
+        auto txinfo = mempool.info(hash);
+        bool ValidFee = true;
+        connman.ForNode(nStemId, [&connman, &txinfo, &ValidFee](CNode* pto) {
+            CAmount filterrate = 0;
+            {
+                LOCK(pto->cs_feeFilter);
+                filterrate = pto->minFeeFilter;
+            }
+
+            if (filterrate && txinfo.feeRate.GetFeePerK() < filterrate) {
+                ValidFee = false;
+                return false;
+            }    
+            return true;
+        });
+
+        if (!ValidFee) {
+            RelayTransaction(tx, connman);
+            return;
+        }
+    
         int64_t nNow = GetTimeMicros();
         int64_t embargoTime = PoissonNextSend(nNow, EMBARGO_MEAN_DELAY) + EMBARGO_FIXED_DELAY * 1000000; 
         embargoTime = std::max(embargoTime, parentEmbargoTime+1);
