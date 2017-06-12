@@ -1019,8 +1019,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
         nStemId = vStemNodesExceptSender[GetRand(vStemNodesExceptSender.size())];
 
         auto txinfo = mempool.info(hash);
-        bool ValidFee = true;
-        connman.ForNode(nStemId, [&connman, &txinfo, &ValidFee](CNode* pto) {
+        bool ValidFee = connman.ForNode(nStemId, [&connman, &txinfo](CNode* pto) {
             CAmount filterrate = 0;
             {
                 LOCK(pto->cs_feeFilter);
@@ -1028,7 +1027,6 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
             }
 
             if (filterrate && txinfo.feeRate.GetFeePerK() < filterrate) {
-                ValidFee = false;
                 return false;
             }    
             return true;

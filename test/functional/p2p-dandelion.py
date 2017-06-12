@@ -22,6 +22,17 @@ import time
 class TestNode(NodeConnCB):
     def __init__(self):
         super().__init__()
+        self.txinvs = []
+
+    def on_inv(self, conn, message):
+        for i in message.inv:
+            if (i.type == 1 or i.type == 5):
+                self.txinvs.append(hashToHex(i.hash))
+
+    def clear_invs(self):
+        with mininode_lock:
+            self.txinvs = []
+
 
 # TODO: Test cases to add:
 """
@@ -59,7 +70,17 @@ class TestNode(NodeConnCB):
    A --notfound--> TestNode
    then later disconnect
 """
+def hashToHex(hash):
+    return format(hash, '064x')
 
+# Wait up to 60 secs to see if the testnode has received all the expected invs
+def allInvsMatch(invsExpected, testnode):
+    for x in range(60):
+        with mininode_lock:
+            if (sorted(invsExpected) == sorted(testnode.txinvs)):
+                return True
+        time.sleep(1)
+    return False
 
 class DandelionTest(BitcoinTestFramework):
 
@@ -92,24 +113,33 @@ class DandelionTest(BitcoinTestFramework):
         node4 = self.nodes[4]
 
         # Get out of IBD
-        [ n.generate(1) for n in self.nodes ]
-
+        #[ n.generate(1) for n in self.nodes ]
+        node0.generate(10)
+        sync_blocks(self.nodes)
         time.sleep(5);
 
         # Setup the p2p connections and start up the network thread.
         test_node = TestNode()
         connections = []
-        connections.append(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], test_node))
+        connection = NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], test_node)
+        test_node.add_connection(connection)
 
         NetworkThread().start()
         test_node.wait_for_verack()
 
         self.log.info('Node1.balance %d' % (node1.getbalance(),))
-        txids = [node0.sendtoaddress(node0.getnewaddress(), 1) for x in range(30)]
+        #txids = [node0.sendtoaddress(node0.getnewaddress(), 1) for x in range(30)]
 
-        time.sleep(40)
+        #time.sleep(40)
 
-        [ c.disconnect_node() for c in connections ]
+        #[ c.disconnect_node() for c in connections ]
+
+
+        # Test that invs are received for all txs at feerate of 20 sat/byte
+        #node1.settxfee(Decimal("0.00020000"))
+        txids = [node1.sendtoaddress(node1.getnewaddress(), 1) for x in range(3)]
+        assert(allInvsMatch(txids, test_node))
+        test_node.clear_invs()
 
         self.log.info('tmpdir: %s' % (self.options.tmpdir,))
 
