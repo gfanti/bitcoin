@@ -1560,6 +1560,7 @@ bool CWalletTx::RelayWalletTransaction(CConnman* connman)
             LogPrintf("Relaying wtx %s\n", GetHash().ToString());
             if (connman) {
                 RelayTransactionDandelion(*this, *connman, -1);
+                return true;
             }
         }
     }
