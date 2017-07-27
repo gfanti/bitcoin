@@ -1023,13 +1023,25 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
         mapEmbargo.insert(std::make_pair(hash, emb));
         CInv inv(MSG_DANDELION_TX, hash);
 
-        connman.ForEachNode([&inv, &fRelayed, nStemId](CNode* pnode) {
+        CNode* pto = NULL; 
+        connman.ForEachNode([&pto, nStemId](CNode* pnode) {
             if (pnode->GetId() == nStemId) {
-                // TODO: Check fee policy, and abort if would clearly fail?
-                pnode->PushInventory(inv);
-                fRelayed = true;
+             	pto = pnode;
             }
         });
+
+        // Instead of waiting for SendMessages to send the dandelion inv, send it immediately
+        // So that the embargo time doesn't run out before a decent number of hops
+	if (pto) {
+            const CNetMsgMaker msgMaker(pto->GetSendVersion());
+            std::vector<CInv> vInv;
+	    vInv.reserve(INVENTORY_BROADCAST_MAX);
+            vInv.push_back(inv);
+            // TODO: Check fee policy, and abort if would clearly fail
+            connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
+            fRelayed = true;
+            vInv.clear();
+	}
     }
 
     if (fRelayed) {
@@ -3206,7 +3218,13 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         //
         nNow = GetTimeMicros();
         if (nNextDandelionReassign < nNow) {
-            nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+            if (nNextDandelionReassign == 0) {
+                LogPrint(BCLog::NET, "Initial dandelion shuffling period set to 60 seconds.");
+                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+            } else {
+                nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+            }
+
             std::vector<NodeId> candidates;
             connman.ForEachNode([&candidates](CNode* pnode) {
                 // TODO: further qualities to check?
