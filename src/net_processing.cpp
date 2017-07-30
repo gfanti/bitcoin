@@ -3206,7 +3206,11 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         //
         nNow = GetTimeMicros();
         if (nNextDandelionReassign < nNow) {
-            nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+            if (nNextDandelionReassign == 0) {
+                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+            } else {
+                nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+            }
             std::vector<NodeId> candidates;
             connman.ForEachNode([&candidates](CNode* pnode) {
                 // TODO: further qualities to check?
