@@ -3234,6 +3234,10 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                 std::copy( vStemNodes.begin(), vStemNodes.end(), std::ostream_iterator<NodeId>(ss, " "));
                 LogPrint(BCLog::NET, "Dandelion nodes %s\n", ss.str().c_str());
             }
+            if (vStemNodes.empty()) {
+                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+            }
+                
         }
 
         //
