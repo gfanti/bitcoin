@@ -1277,7 +1277,6 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 auto embargo = mapEmbargo.find(inv.hash);
                 bool fEmbargoed = embargo != mapEmbargo.end();
                 if (mi != mapRelay.end()) {
-                    LogPrint(BCLog::NET, "dandelion: tx=%s in mapEmbargo=%d\n", inv.hash.ToString(), embargo == mapEmbargo.end());
                     push = true;
                     if (!fEmbargoed) {
                         LogPrint(BCLog::NET, "tx=%s relayed as tx\n", inv.hash.ToString());
