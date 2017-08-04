@@ -88,6 +88,8 @@ static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
 static const int64_t DEFAULT_DANDELION_PROB_PCT  = 90;
 
+static const bool DEFAULT_BLACKHOLE = false;
+
 static const ServiceFlags REQUIRED_SERVICES = NODE_NETWORK;
 
 // NOTE: When adjusting this, update rpcnet:setban's help ("24h")
@@ -141,6 +143,7 @@ public:
         int nMaxAddnode = 0;
         int nMaxFeeler = 0;
         int nBestHeight = 0;
+        bool fBlackhole = false;
         CClientUIInterface* uiInterface = nullptr;
         unsigned int nSendBufferMaxSize = 0;
         unsigned int nReceiveFloodSize = 0;

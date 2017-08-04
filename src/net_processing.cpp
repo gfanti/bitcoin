@@ -2853,6 +2853,7 @@ static bool SendRejectsAndCheckIfBanned(CNode* pnode, CConnman& connman)
 
 bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
 {
+
     const CChainParams& chainparams = Params();
     //
     // Message format
@@ -2906,6 +2907,12 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& i
         return fMoreWork;
     }
     std::string strCommand = hdr.GetCommand();
+    
+    if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && strCommand == NetMsgType::DANDELIONTX ) {
+        /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
+        return true;
+    }
+
 
     // Message size
     unsigned int nMessageSize = hdr.nMessageSize;
