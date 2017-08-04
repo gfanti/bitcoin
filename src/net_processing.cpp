@@ -1725,6 +1725,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             bool fAlreadyHave = AlreadyHave(inv);
             LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->GetId());
 
+
+            if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && inv.type == MSG_DANDELION_TX ) {
+                /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
+                LogPrint(BCLog::NET, "blackhole: ignoring dandelion inv=%s", inv.hash.ToString());
+                continue;
+            }
+
             if (inv.type == MSG_TX || inv.type == MSG_DANDELION_TX) {
                 inv.type |= nFetchFlags;
             }
@@ -1971,6 +1978,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         CInv inv(MSG_TX, tx.GetHash());
         bool fIsDandelion = strCommand == NetMsgType::DANDELIONTX;
+
+        if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && fIsDandelion ) {
+            /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
+            LogPrint(BCLog::NET, "blackhole: ignoring dandelion tx=%s", inv.hash.ToString());
+            return true;
+        }
+
+
         if (!fIsDandelion) pfrom->AddInventoryKnown(inv);
 
         LOCK(cs_main);
@@ -2908,11 +2923,6 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& i
     }
     std::string strCommand = hdr.GetCommand();
     
-    if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && strCommand == NetMsgType::DANDELIONTX ) {
-        /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
-        return true;
-    }
-
 
     // Message size
     unsigned int nMessageSize = hdr.nMessageSize;
