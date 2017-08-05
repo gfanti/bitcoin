@@ -1726,7 +1726,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->GetId());
 
 
-            if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && inv.type == MSG_DANDELION_TX ) {
+            if (GetBoolArg("-blackhole", DEFAULT_BLACKHOLE) && inv.type == MSG_DANDELION_TX ) {
                 /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
                 LogPrint(BCLog::NET, "blackhole: ignoring dandelion inv=%s", inv.hash.ToString());
                 continue;
@@ -1979,7 +1979,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         CInv inv(MSG_TX, tx.GetHash());
         bool fIsDandelion = strCommand == NetMsgType::DANDELIONTX;
 
-        if (GetArg("-blackhole", DEFAULT_BLACKHOLE) && fIsDandelion ) {
+        if (GetBoolArg("-blackhole", DEFAULT_BLACKHOLE) && fIsDandelion ) {
             /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
             LogPrint(BCLog::NET, "blackhole: ignoring dandelion tx=%s", inv.hash.ToString());
             return true;

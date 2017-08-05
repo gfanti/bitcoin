@@ -1650,13 +1650,15 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     // Map ports with UPnP
     MapPort(GetBoolArg("-upnp", DEFAULT_UPNP));
 
+    LogPrintf("dandelion: blackhole is %s", GetBoolArg("-blackhole", DEFAULT_BLACKHOLE));
+
     std::string strNodeError;
     CConnman::Options connOptions;
     connOptions.nLocalServices = nLocalServices;
     connOptions.nRelevantServices = nRelevantServices;
     connOptions.nMaxConnections = nMaxConnections;
     connOptions.nMaxOutbound = std::min((int)(GetArg("-maxoutbound", MAX_OUTBOUND_CONNECTIONS)), connOptions.nMaxConnections);
-    connOptions.fBlackhole = GetArg("-blackhole", DEFAULT_BLACKHOLE);
+    connOptions.fBlackhole = GetBoolArg("-blackhole", DEFAULT_BLACKHOLE);
     connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
     connOptions.nMaxFeeler = 1;
     connOptions.nBestHeight = chainActive.Height();
