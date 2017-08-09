@@ -985,6 +985,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
     std::copy_if(vStemNodes.begin(), vStemNodes.end(), std::back_inserter(vStemNodesExceptSender), [nFrom](NodeId id){return id != nFrom;} );
 
     if (vStemNodesExceptSender.empty()) {
+        LogPrint(BCLog::NET, "dandelion: no stem nodes to send to tx=%s", hash.ToString());
         RelayTransaction(tx, connman);
         return;
     }
