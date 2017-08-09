@@ -1060,10 +1060,12 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
             } else {
                 fRelayed = false;
                 LogPrint(BCLog::NET, "dandelion: relayed as regular inv, tx=%s\n", hash.ToString());
-                RelayTransaction(tx, connman);
-                return;
+       //         RelayTransaction(tx, connman);
+       //         return;
 //                vInv.push_back(CInv(MSG_TX, hash));    
             }
+        }
+        if (fRelayed) {
             LogPrint(BCLog::NET, "dandelion: Adding to map relay tx=%s\n", inv.hash.ToString());
             {
                 auto ret = mapRelay.insert(std::make_pair(hash, std::move(txinfo.tx)));
@@ -1281,7 +1283,6 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 auto embargo = mapEmbargo.find(inv.hash);
                 bool fEmbargoed = embargo != mapEmbargo.end();
                 if (mi != mapRelay.end()) {
-                    LogPrint(BCLog::NET, "dandelion: tx=%s in mapEmbargo=%d\n", inv.hash.ToString(), embargo == mapEmbargo.end());
                     push = true;
                     if (!fEmbargoed) {
                         LogPrint(BCLog::NET, "tx=%s relayed as tx\n", inv.hash.ToString());
