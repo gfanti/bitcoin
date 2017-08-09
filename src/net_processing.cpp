@@ -1033,6 +1033,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
         });
 
         if (pto) {
+            LOCK(pto->cs_inventory);
             std::vector<CInv> vInv;
             vInv.reserve(1);
             const CNetMsgMaker msgMaker(pto->GetSendVersion());
@@ -1043,6 +1044,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
                 LOCK(pto->cs_feeFilter);
                 filterrate = pto->minFeeFilter;
             }
+            LOCK(pto->cs_filter);
             if (pto->filterInventoryKnown.contains(hash))
                 return;
 
@@ -1065,8 +1067,9 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
             LogPrint(BCLog::NET, "dandelion: Adding to map relay tx=%s\n", inv.hash.ToString());
             {
                 auto ret = mapRelay.insert(std::make_pair(hash, std::move(txinfo.tx)));
-                if (!ret.second)
-                    LogPrint(BCLog::NET, "dandelion: not inserted into map relay, tx=%s\n", hash.ToString());
+                if (ret.second) {
+                    vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
+                }
             }
             connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
             vInv.clear();
