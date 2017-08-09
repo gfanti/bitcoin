@@ -3207,7 +3207,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         nNow = GetTimeMicros();
         if (nNextDandelionReassign < nNow) {
             if (nNextDandelionReassign == 0) {
-                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+                nNextDandelionReassign = nNow + 2 * 60 * 1000000;
             } else {
                 nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
             }
@@ -3235,7 +3235,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                 LogPrint(BCLog::NET, "Dandelion nodes %s\n", ss.str().c_str());
             }
             if (vStemNodes.empty()) {
-                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+                nNextDandelionReassign = nNow + 2 * 60 * 1000000;
             }
                 
         }
