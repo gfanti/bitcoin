@@ -3210,7 +3210,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
             if (nNextDandelionReassign == 0) {
                 nNextDandelionReassign = nNow + 2 * 60 * 1000000;
             } else {
-                nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+                nNextDandelionReassign = nNow + 5 * 60 * 1000000; // TODO: randomly choose?
             }
             std::vector<NodeId> candidates;
             connman.ForEachNode([&candidates](CNode* pnode) {
