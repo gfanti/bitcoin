@@ -971,7 +971,7 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
 void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId nFrom)
 {
     uint256 hash = tx.GetHash();
-
+    bool bugdebug = GetBoolArg("-bugdebug", DEFAULT_BUGDEBUG);
     bool fEmbargoedParent = false;
     bool fCoinflip = false;
     int64_t parentEmbargoTime = 0;
@@ -1083,6 +1083,7 @@ static void RelayAddress(const CAddress& addr, bool fReachable, CConnman& connma
 
 void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
 {
+    bool bugdebug = GetBoolArg("-bugdebug", DEFAULT_BUGDEBUG);
     std::deque<CInv>::iterator it = pfrom->vRecvGetData.begin();
     std::vector<CInv> vNotFound;
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
@@ -1099,7 +1100,7 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 return;
 
             LogPrint(BCLog::NET, "received getdata for: %s peer=%d\n", inv.ToString(), pfrom->GetId());
-
+            if (bugdebug) LogPrint(BCLog::NET, "bugdebug: received getdata for: %s\n", inv.ToString());
             it++;
 
             if (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK || inv.type == MSG_CMPCT_BLOCK || inv.type == MSG_WITNESS_BLOCK)
@@ -1241,14 +1242,20 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 auto embargo = mapEmbargo.find(inv.hash);
                 bool fEmbargoed = embargo != mapEmbargo.end();
                 if (mi != mapRelay.end()) {
+                    if (bugdebug) LogPrint(BCLog::NET, "bugdebug: found in maprelay inv: %s\n", inv.ToString()); 
                     push = true;
-                    if (!fEmbargoed)
+                    if (!fEmbargoed) {
+                        if (bugdebug) LogPrint(BCLog::NET, "bugdebug: not embargoed inv: %s\n", inv.ToString());
                         connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
-                    else if (pfrom->GetId() == embargo->second.stemId)
+                    } else if (pfrom->GetId() == embargo->second.stemId) {
+                        if (bugdebug) LogPrint(BCLog::NET, "bugdebug: embargoed and from the person it was sent to inv: %s\n", inv.ToString());
                         connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, pfrom->isDandelion() ? NetMsgType::DANDELIONTX : NetMsgType::TX, *mi->second));
-                    else
+                    } else {
+                        if (bugdebug) LogPrint(BCLog::NET, "bugdebug: embargoed but from a rano  inv: %s\n", inv.ToString());
                         push = false;
+                    }
                 } else if (!fEmbargoed && pfrom->timeLastMempoolReq) {
+                    if (bugdebug) LogPrint(BCLog::NET, "bugdebug: not in maprelay, not embargoed inv:%s\n", inv.ToString());
                     auto txinfo = mempool.info(inv.hash);
                     // To protect privacy, do not answer getdata using the mempool when
                     // that TX couldn't have been INVed in reply to a MEMPOOL request.
@@ -1318,6 +1325,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
+    bool bugdebug = GetBoolArg("-bugdebug", DEFAULT_BUGDEBUG);
 
     if (!(pfrom->GetLocalServices() & NODE_BLOOM) &&
               (strCommand == NetMsgType::FILTERLOAD ||
@@ -1681,7 +1689,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
             bool fAlreadyHave = AlreadyHave(inv);
             LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->GetId());
-
+            if (bugdebug) LogPrint(BCLog::NET, "bugdebug: got inv: %s\n", inv.ToString()); 
             if (GetBoolArg("-blackhole", DEFAULT_BLACKHOLE) && inv.type == MSG_DANDELION_TX ) {
                 /* If blackhole for Dandelion, then don't act on Dandelion transactions. */
                 LogPrint(BCLog::NET, "blackhole: ignoring dandelion inv=%s", inv.hash.ToString());
@@ -1715,6 +1723,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     // Ask regardless if the tx is a dandelion stem
                     bool fEmbargoed = mapEmbargo.find(inv.hash) != mapEmbargo.end();
                     if (!fAlreadyHave || fEmbargoed) {
+                        if (bugdebug) LogPrint(BCLog::NET, "bugdebug: asking for inv: %s\n", inv.ToString());
                         pfrom->AskFor(inv);
                     }
                 }
@@ -3527,3 +3536,4 @@ public:
         mapOrphanTransactionsByPrev.clear();
     }
 } instance_of_cnetprocessingcleanup;
+

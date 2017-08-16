@@ -401,6 +401,7 @@ std::string HelpMessage(HelpMessageMode mode)
     strUsage += HelpMessageOpt("-dandelion=<n>", strprintf(_("Configure Dandelion (privacy-preserving transaction propagation) stem probability (default: %.2f, 0 to disable)"), DEFAULT_DANDELION_PROB_PCT));
     strUsage += HelpMessageOpt("-maxoutbound=<n>", strprintf(_("Limit the number of automatic outbound connections made (default: %.2f)"), MAX_OUTBOUND_CONNECTIONS));
     strUsage += HelpMessageOpt("-blackhole", strprintf(_("Ignore any Dandelion transactions accepted from other nodes (default:%s)"), DEFAULT_BLACKHOLE ? "true":"false")); 
+    strUsage += HelpMessageOpt("-bugdebug", strprintf(_("Print excessive debug logs in order to find bug (default: %.2f)"), DEFAULT_BUGDEBUG));
     strUsage += HelpMessageOpt("-port=<port>", strprintf(_("Listen for connections on <port> (default: %u or testnet: %u)"), defaultChainParams->GetDefaultPort(), testnetChainParams->GetDefaultPort()));
     strUsage += HelpMessageOpt("-proxy=<ip:port>", _("Connect through SOCKS5 proxy"));
     strUsage += HelpMessageOpt("-proxyrandomize", strprintf(_("Randomize credentials for every proxy connection. This enables Tor stream isolation (default: %u)"), DEFAULT_PROXYRANDOMIZE));
