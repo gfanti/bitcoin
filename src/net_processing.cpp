@@ -1062,7 +1062,7 @@ void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId
                 fRelayed = true;
             } else {
                 fRelayed = false;
-                LogPrint(BCLog::NET, "dandelion: relayed dandelion tx=%s\n", hash.ToString());
+                LogPrint(BCLog::NET, "dandelion: relayed as regular inv=%s\n", hash.ToString());
                 RelayTransaction(tx, connman);
                 return;
             }
