@@ -498,6 +498,7 @@ public:
     int nVersion;
     std::string cleanSubVer;
     bool fInbound;
+    bool fDandelion;
     bool fAddnode;
     int nStartingHeight;
     uint64_t nSendBytes;

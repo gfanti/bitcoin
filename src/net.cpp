@@ -650,6 +650,7 @@ void CNode::copyStats(CNodeStats &stats)
         X(cleanSubVer);
     }
     X(fInbound);
+    stats.fDandelion = isDandelion();
     X(fAddnode);
     X(nStartingHeight);
     {
