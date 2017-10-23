@@ -1088,8 +1088,8 @@ bool AppInitParameterInteraction()
     // Option to startup with mocktime set (used for regression testing):
     SetMockTime(GetArg("-mocktime", 0)); // SetMockTime(0) is a no-op
 
-    if (GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT) > 0)
-        nLocalServices = ServiceFlags(nLocalServices | NODE_DANDELION);
+    //if (GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT) > 0)
+    nLocalServices = ServiceFlags(nLocalServices | NODE_DANDELION);
 
     if (GetBoolArg("-peerbloomfilters", DEFAULT_PEERBLOOMFILTERS))
         nLocalServices = ServiceFlags(nLocalServices | NODE_BLOOM);
