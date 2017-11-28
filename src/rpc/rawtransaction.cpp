@@ -871,7 +871,7 @@ UniValue sendrawtransaction(const JSONRPCRequest& request)
     if(!g_connman)
         throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
 
-    RelayTransactionDandelion(*tx, *g_connman, -1);
+    RelayTransactionDandelion(*tx, *g_connman, NULL);
 
     return hashTx.GetHex();
 }
