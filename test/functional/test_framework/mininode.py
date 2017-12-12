@@ -1469,6 +1469,21 @@ class msg_witness_blocktxn(msg_blocktxn):
         r += self.block_transactions.serialize(with_witness=True)
         return r
 
+class msg_notfound(object):
+    command = b"notfound"
+
+    def __init__(self):
+        pass
+
+    def deserialize(self, f):
+        pass
+
+    def serialize(self):
+        return b""
+
+    def __repr__(self):
+        return "msg_notfound()"
+
 class NodeConnCB(object):
     """Callback and helper functions for P2P connection to a bitcoind node.
 
@@ -1557,6 +1572,7 @@ class NodeConnCB(object):
     def on_sendcmpct(self, conn, message): pass
     def on_sendheaders(self, conn, message): pass
     def on_tx(self, conn, message): pass
+    def on_notfound(self, conn, message): pass
 
     def on_inv(self, conn, message):
         want = msg_getdata()
@@ -1663,7 +1679,8 @@ class NodeConn(asyncore.dispatcher):
         b"sendcmpct": msg_sendcmpct,
         b"cmpctblock": msg_cmpctblock,
         b"getblocktxn": msg_getblocktxn,
-        b"blocktxn": msg_blocktxn
+        b"blocktxn": msg_blocktxn,
+        b"notfound": msg_notfound
     }
     MAGIC_BYTES = {
         "mainnet": b"\xf9\xbe\xb4\xd9",   # mainnet
