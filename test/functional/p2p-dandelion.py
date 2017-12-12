@@ -1,117 +1,72 @@
 #!/usr/bin/env python3
-"""Test processing of dandelion transactions
+# Copyright (c) 2017 Bradley Denby
+# Distributed under the MIT software license. See the accompanying file COPYING
+# or http://www.opensource.org/licenses/mit-license.php.
+"""Test transaction behaviors under the Dandelion spreading policy
 
-Setup: two nodes, node0 and node1, not connected to each other.  Node0 does not
-whitelist localhost, but node1 does. They will each be on their own chain for
-this test.
+There are three nodes on one stem: 0 ----> 1 ----> 2
 
-We have one NodeConn connection to each, test_node and white_node respectively.
-
-The test:
-1. Generate one block on each node, to leave IBD.
-
+Tests:
+0. Generate a block for each node in order to leave Initial Block Download (IBD)
+1. Test for resistance to active probing while in stem phase:
+   Stem: 0 ----> 1 ----> 2; each node with "-dandelion=1.0"
+   Node 0 generates a transaction: 0.1 BTC from Node 0 to Node 2
+   TestNode 1 sends getdata for this txn to Node 0
+   Nominal results: Node 0 replies with notfound
 """
 
-from test_framework.mininode import *
-from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import *
-import time
+from test_framework.mininode import *                          # NodeConnCB
+from test_framework.test_framework import BitcoinTestFramework # BitcoinTestFramework
+from test_framework.util import *                              # other stuff
+import time                                                    # sleep
 
-# TestNode: bare-bones "peer".  Used mostly as a conduit for a test to sending
-# p2p messages to a node, generating the messages in the main testing logic.
 class TestNode(NodeConnCB):
-    def __init__(self):
-        super().__init__()
+  def __init__(self):
+    super().__init__()
 
-# TODO: Test cases to add:
-"""
-1. Robustness
-   A --[stem]--> TestNode
-   TestNode ignores for a minute
-
- Expect:
-   A --[fluff]-> TestNode
-
-2. Resistant to active probing
-   A --[stem]--> B
-   A <--getdata--- TestNode
- Expect:
-     No inv to A
-     A --notfound--> TestNode
-
-3. Simulated orphan handling
-   A --[stem]{tx1,tx2}--> B --[stem]{tx1,tx2}--> TestNode
-   A <--{tx2}-- TestNode
-
- Expect:
-   A --getdata{tx1}--> TestNode
-
-4. A limitation that allows a spy to distinguish the sender
-
-   A --[stem]{tx1}--> B --[stem]{tx1}--> TestNode
-  TestNode creates an invalid transaction tx2* that spends tx1
-   A <--getdata{00000}-- TestNode
-   A <--{tx2*}-- TestNode
-
- Expect:
-   A disconnects TestNode2 immediately
- If A did not actually have tx1, then instead we'd expect:
-   A --notfound--> TestNode
-   then later disconnect
-"""
-
+  def getdata(self, tx_hash):
+    msg = msg_getdata()
+    msg.inv.append(CInv(1,tx_hash))
+    self.connection.send_message(msg)
 
 class DandelionTest(BitcoinTestFramework):
+  def __init__(self):
+    super().__init__()
+    self.num_nodes = 3
+    self.setup_clean_chain = False # Results in nodes having a balance to spend
+    self.nodes = None
+    self.extra_args = [["-dandelion=1.0"],["-dandelion=1.0"],["-dandelion=1.0"]]
 
-    def __init__(self):
-        super().__init__()
-        self.num_nodes = 5
-        self.setup_clean_chain = False
+  def setup_network(self):
+    self.setup_nodes()
+    # 0 ----> 1 ----> 2
+    connect_nodes(self.nodes[0],1)
+    connect_nodes(self.nodes[1],2)
 
-    def setup_network(self):
-        self.extra_args = [["-whitelist=127.0.0.1"]]*4 + [["-whitelist=127.0.0.1","-dandelion=0"]]
-        #self.extra_args = [[]]*4 + [["-dandelion=0"]]
-        #self.extra_args = [["-dandelion=1"]] +[["-dandelion=0"]]*4
-        self.setup_nodes()
-        connect_nodes(self.nodes[0], 1)
-        connect_nodes(self.nodes[1], 2)
-        connect_nodes(self.nodes[2], 3)
-        connect_nodes(self.nodes[1], 4)
-
-        # Intended communication pattern!
-        # 0 --[stem]--> 1 --[stem] --> 2 --[stem]--> 3
-        #                              2 <-[fluff]-- 3
-        #               1 <-[fluff]--  2
-        #               1 --[fluff]---------------------> 4
-
-    def run_test(self):
-        node0 = self.nodes[0]
-        node1 = self.nodes[1]
-        node2 = self.nodes[2]
-        node3 = self.nodes[3]
-        node4 = self.nodes[4]
-
-        # Get out of IBD
-        [ n.generate(1) for n in self.nodes ]
-
-        time.sleep(5);
-
-        # Setup the p2p connections and start up the network thread.
-        test_node = TestNode()
-        connections = []
-        connections.append(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], test_node))
-
-        NetworkThread().start()
-        test_node.wait_for_verack()
-
-        self.log.info('Node1.balance %d' % (node1.getbalance(),))
-        txids = [node0.sendtoaddress(node0.getnewaddress(), 1) for x in range(30)]
-
-        time.sleep(40)
-
-        [ c.disconnect_node() for c in connections ]
-
-        self.log.info('tmpdir: %s' % (self.options.tmpdir,))
+  def run_test(self):
+    # Convenience variables
+    node0 = self.nodes[0]
+    node1 = self.nodes[1]
+    node2 = self.nodes[2]
+    stem = [node0, node1, node2]
+    # Get out of Initial Block Download (IBD)
+    # Note: Generating a block at each root and using sync_blocks() would fail
+    #       for nodes with "-dandelion=1.0"
+    for node in self.nodes:
+      node.generate(1)
+    # Test 1: Resistance to active probing while in stem phase
+    t1_test_node = TestNode()
+    t1_test_conn = NodeConn('127.0.0.1',p2p_port(0),node0,t1_test_node)
+    t1_test_node.add_connection(t1_test_conn)
+    NetworkThread().start()
+    time.sleep(1)
+    t1_txid = node0.sendtoaddress(node2.getnewaddress(),0.1)
+    t1_tx = FromHex(CTransaction(),node0.gettransaction(t1_txid)['hex'])
+    assert(not 'notfound' in t1_test_node.message_count)
+    t1_test_node.getdata(t1_tx.calc_sha256(True))
+    time.sleep(1)
+    assert('notfound' in t1_test_node.message_count)
+    self.log.info('Success: resistance to stem phase active probing')
 
 if __name__ == '__main__':
-    DandelionTest().main()
+  DandelionTest().main()
