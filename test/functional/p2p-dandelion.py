@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2017 Bradley Denby
+# Copyright (c) 2017-2018 Bradley Denby
 # Distributed under the MIT software license. See the accompanying file COPYING
 # or http://www.opensource.org/licenses/mit-license.php.
 """Test transaction behaviors under the Dandelion spreading policy
@@ -23,6 +23,20 @@ Tests:
    Probe: TestNode --> 0
    Wait 40 seconds after Test 2, then TestNode sends getdata for tx to Node 0
    Assert that Node 0 replies with tx
+
+4. Multiple transaction routing (defence against intersection attacks):
+   Stem:  3 --> 5 --> 6 where each node has argument "-dandelion=1.0"
+               ^ \
+              /   v
+             4     7
+   Probes: TestNode --> 6, TestNode --> 7
+   Node 3 generates 3 transactions of 0.1 BTC from Node 3 to Node 5
+   Node 4 generates 3 transactions of 0.1 BTC from Node 4 to Node 5
+   Wait 20 seconds (allows stem propagation), then disconnect all nodes
+   Wait 40 seconds (ensures fluff phase), then TestNode6 sends getdata for
+   transactions to Node 6 and TestNode7 sends getdata for transactions to Node 7
+   Assert that each transaction has exactly one destination
+   Assert that all transactions from the same node have the same destination
 """
 
 from test_framework.mininode import *                          # NodeConnCB
@@ -42,10 +56,12 @@ class TestNode(NodeConnCB):
 class DandelionTest(BitcoinTestFramework):
   def __init__(self):
     super().__init__()
-    self.num_nodes = 3
+    self.num_nodes = 8
     self.setup_clean_chain = True
     self.nodes = None
-    self.extra_args = [["-dandelion=1.0"],["-dandelion=1.0"],["-dandelion=1.0"]]
+    self.extra_args = [["-dandelion=1.0"],["-dandelion=1.0"],["-dandelion=1.0"],
+                       ["-dandelion=1.0"],["-dandelion=1.0"],["-dandelion=1.0"],
+                       ["-dandelion=1.0"],["-dandelion=1.0"]]
 
   def setup_network(self):
     self.setup_nodes()
@@ -53,23 +69,50 @@ class DandelionTest(BitcoinTestFramework):
     connect_nodes(self.nodes[0],1)
     connect_nodes(self.nodes[1],2)
     connect_nodes(self.nodes[2],0)
+    # Test 4: 3 --> 5 --> 6
+    #              ^ \
+    #             /   v
+    #            4     7
+    connect_nodes(self.nodes[3],5)
+    connect_nodes(self.nodes[4],5)
+    connect_nodes(self.nodes[5],6)
+    connect_nodes(self.nodes[5],7)
 
   def run_test(self):
     # Convenience variables
     node0 = self.nodes[0]
     node1 = self.nodes[1]
     node2 = self.nodes[2]
+    node3 = self.nodes[3]
+    node4 = self.nodes[4]
+    node5 = self.nodes[5]
+    node6 = self.nodes[6]
+    node7 = self.nodes[7]
 
     # Setup TestNodes
     test_node0 = TestNode()
     test_conn0 = NodeConn('127.0.0.1',p2p_port(0),node0,test_node0)
     test_node0.add_connection(test_conn0)
+    test_node6 = TestNode()
+    test_conn6 = NodeConn('127.0.0.1',p2p_port(6),node6,test_node6)
+    test_node6.add_connection(test_conn6)
+    test_node7 = TestNode()
+    test_conn7 = NodeConn('127.0.0.1',p2p_port(7),node7,test_node7)
+    test_node7.add_connection(test_conn7)
 
     # Get out of Initial Block Download (IBD)
     for node in self.nodes:
       node.generate(1)
     # Generate funds for node0
     node0.generate(101)
+    # Generate funds for node3
+    node3.generate(101)
+    node3.generate(1)
+    node3.generate(1)
+    # Generate funds for node4
+    node4.generate(101)
+    node4.generate(1)
+    node4.generate(1)
 
     # Start networking thread
     NetworkThread().start()
@@ -126,7 +169,114 @@ class DandelionTest(BitcoinTestFramework):
       except AssertionError:
         if not test_3_passed and tries_left == 0:
           self.log.info('Failed: resistance to black holes')
-    all_tests_passed = test_1_passed and test_2_passed and test_3_passed
+
+    # Test 4
+    ## Node 3 Sent Transactions
+    node3_tx_count = 3
+    node3_txids = []
+    node3_txs = []
+    for i in range(node3_tx_count):
+      node3_txids.append(node3.sendtoaddress(node5.getnewaddress(),0.1))
+      node3_txs.append(FromHex(CTransaction(),node3.gettransaction(node3_txids[i])['hex']))
+    ## Node 4 Sent Transactions
+    node4_tx_count = 3
+    node4_txids = []
+    node4_txs = []
+    for i in range(node4_tx_count):
+      node4_txids.append(node4.sendtoaddress(node5.getnewaddress(),0.1))
+      node4_txs.append(FromHex(CTransaction(),node4.gettransaction(node4_txids[i])['hex']))
+    ## Node 6 Received Transactions
+    tx_received_node6 = {} # Dictionary: tx received at node 6? True/False
+    for i in range(node3_tx_count):
+      tx_received_node6[node3_txs[i].vin[0].prevout.hash] = False
+    for i in range(node4_tx_count):
+      tx_received_node6[node4_txs[i].vin[0].prevout.hash] = False
+    ## Node 7 Received Transactions
+    tx_received_node7 = {} # Dictionary: tx received at node 7? True/False
+    for i in range(node3_tx_count):
+      tx_received_node7[node3_txs[i].vin[0].prevout.hash] = False
+    for i in range(node4_tx_count):
+      tx_received_node7[node4_txs[i].vin[0].prevout.hash] = False
+    ## Wait for stem phase propagation
+    time.sleep(20)
+    ## Disconnect nodes
+    disconnect_nodes(self.nodes[3],5)
+    disconnect_nodes(self.nodes[4],5)
+    disconnect_nodes(self.nodes[5],6)
+    disconnect_nodes(self.nodes[5],7)
+    ## Wait for fluff phase
+    time.sleep(40)
+    ## Probe Node 6
+    node6_node3_tx_count = 0 # Number of txs from node3 received by node6
+    node6_node4_tx_count = 0 # Number of txs from node4 received by node6
+    node6_notfound_count = 0
+    test_node6.message_count['notfound'] = node6_notfound_count
+    for i in range(node3_tx_count):
+      test_node6.getdata(node3_txs[i].calc_sha256(True))
+      time.sleep(1)
+      if test_node6.message_count['notfound'] == node6_notfound_count:
+        tx_hash = test_node6.last_message['tx'].tx.vin[0].prevout.hash
+        if tx_hash in tx_received_node6:
+          tx_received_node6[tx_hash] = True
+          node6_node3_tx_count += 1
+      else:
+        node6_notfound_count = test_node6.message_count['notfound']
+    for i in range(node4_tx_count):
+      test_node6.getdata(node4_txs[i].calc_sha256(True))
+      time.sleep(1)
+      if test_node6.message_count['notfound'] == node6_notfound_count:
+        tx_hash = test_node6.last_message['tx'].tx.vin[0].prevout.hash
+        if tx_hash in tx_received_node6:
+          tx_received_node6[tx_hash] = True
+          node6_node4_tx_count += 1
+      else:
+        node6_notfound_count = test_node6.message_count['notfound']
+    ## Probe Node 7
+    node7_node3_tx_count = 0 # Number of txs from node3 received by node7
+    node7_node4_tx_count = 0 # Number of txs from node4 received by node7
+    node7_notfound_count = 0
+    test_node7.message_count['notfound'] = node7_notfound_count
+    for i in range(node3_tx_count):
+      test_node7.getdata(node3_txs[i].calc_sha256(True))
+      time.sleep(1)
+      if test_node7.message_count['notfound'] == node7_notfound_count:
+        tx_hash = test_node7.last_message['tx'].tx.vin[0].prevout.hash
+        if tx_hash in tx_received_node7:
+          tx_received_node7[tx_hash] = True
+          node7_node3_tx_count += 1
+      else:
+        node7_notfound_count = test_node7.message_count['notfound']
+    for i in range(node4_tx_count):
+      test_node7.getdata(node4_txs[i].calc_sha256(True))
+      time.sleep(1)
+      if test_node7.message_count['notfound'] == node7_notfound_count:
+        tx_hash = test_node7.last_message['tx'].tx.vin[0].prevout.hash
+        if tx_hash in tx_received_node7:
+          tx_received_node7[tx_hash] = True
+          node7_node4_tx_count += 1
+      else:
+        node7_notfound_count = test_node7.message_count['notfound']
+    ## Check that the total number of messages is correct
+    test_4_passed = (
+     (node6_node3_tx_count+node7_node3_tx_count==node3_tx_count) and \
+     (node7_node3_tx_count+node7_node4_tx_count==node4_tx_count))
+    ## Check that all transactions from the same node have the same destination
+    if test_4_passed:
+      if node6_node3_tx_count>0:
+        test_4_passed = test_4_passed and (node6_node3_tx_count==node3_tx_count)
+      if node6_node4_tx_count>0:
+        test_4_passed = test_4_passed and (node6_node4_tx_count==node4_tx_count)
+      if node7_node3_tx_count>0:
+        test_4_passed = test_4_passed and (node7_node3_tx_count==node3_tx_count)
+      if node7_node4_tx_count>0:
+        test_4_passed = test_4_passed and (node7_node4_tx_count==node4_tx_count)
+    ## Log results
+    if test_4_passed:
+      self.log.info('Success: multiple transaction routing')
+    else:
+      self.log.info('Failed: multiple transaction routing')
+
+    all_tests_passed = test_1_passed and test_2_passed and test_3_passed and test_4_passed
     assert(all_tests_passed)
 
 if __name__ == '__main__':
