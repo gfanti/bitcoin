@@ -123,18 +123,6 @@ namespace {
     /** Expiration-time ordered list of (expire time, relay map entry) pairs, protected by cs_main). */
     std::deque<std::pair<int64_t, MapRelay::iterator>> vRelayExpiration;
 
-    // Dandelion stem handling
-    typedef std::multimap<int64_t, uint256> MapEmbargo;
-    MapEmbargo mapEmbargoExpire;
-    struct CDandelionEmbargo {
-        MapEmbargo::iterator itExpire;
-        NodeId stemId;
-    };
-    std::map<uint256, CDandelionEmbargo> mapEmbargo;
-    // Invariant: if tx is in mapEmbargo, then either
-    //   - tx is in mapOrphanTransactions, or
-    //   - tx.itExpire != mapEmbargoExpire.end()
-
     std::vector<NodeId> vStemNodes; // Outgoing nodes to use for Dandelion messages
     int64_t nNextDandelionReassign = 0; // timestamp for when we should shuffle nodes
 
@@ -682,7 +670,6 @@ void EraseOrphansFor(NodeId peer)
         if (maybeErase->second.fromPeer == peer)
         {
             nErased += EraseOrphanTx(maybeErase->second.tx->GetHash());
-            mapEmbargo.erase(maybeErase->second.tx->GetHash());
         }
     }
     if (nErased > 0) LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx from peer=%d\n", nErased, peer);
@@ -704,7 +691,6 @@ unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans) EXCLUSIVE_LOCKS_REQUIRE
             std::map<uint256, COrphanTx>::iterator maybeErase = iter++;
             if (maybeErase->second.nTimeExpire <= nNow) {
                 nErased += EraseOrphanTx(maybeErase->second.tx->GetHash());
-                mapEmbargo.erase(maybeErase->second.tx->GetHash());
             } else {
                 nMinExpTime = std::min(maybeErase->second.nTimeExpire, nMinExpTime);
             }
@@ -721,7 +707,6 @@ unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans) EXCLUSIVE_LOCKS_REQUIRE
         if (it == mapOrphanTransactions.end())
             it = mapOrphanTransactions.begin();
         EraseOrphanTx(it->first);
-        mapEmbargo.erase(it->first);
         ++nEvicted;
     }
     return nEvicted;
@@ -789,7 +774,6 @@ void PeerLogicValidation::BlockConnected(const std::shared_ptr<const CBlock>& pb
         int nErased = 0;
         BOOST_FOREACH(uint256 &orphanHash, vOrphanErase) {
             nErased += EraseOrphanTx(orphanHash);
-            mapEmbargo.erase(orphanHash);
         }
         LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx included or conflicted by block\n", nErased);
     }
@@ -951,133 +935,76 @@ static void RelayTransaction(const CTransaction& tx, CConnman& connman)
 {
     CInv inv(MSG_TX, tx.GetHash());
     LogPrint(BCLog::NET, "Relaying tx %s\n", inv.hash.ToString());
-    {
-        // Clear any dandelion embargo information
-        LOCK(cs_main);
-        auto it = mapEmbargo.find(inv.hash);
-        if (it != mapEmbargo.end()) {
-            if (it->second.itExpire != mapEmbargoExpire.end())
-                mapEmbargoExpire.erase(it->second.itExpire);
-            mapEmbargo.erase(it);
-        }
-        // TODO: also erase from the CNode peer
-    }
+
     connman.ForEachNode([&inv](CNode* pnode)
     {
+        // Before relaying the transaction make sure it gets removed from any embargo maps
+        pnode->DandelionTxRemoveEmbargo(inv.hash);
         pnode->PushInventory(inv);
     });
 }
 
-void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId nFrom)
+
+void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, CNode* pfrom)
 {
-    uint256 hash = tx.GetHash();
+    // Get the id of the node to forward the transaction to and perform necessary setup
+    NodeId nStemId = pfrom->DandelionTxSetupRelay(tx);
 
-    bool fEmbargoedParent = false;
-    bool fCoinflip = false;
-    int64_t parentEmbargoTime = 0;
-    bool fRelayed = false;
-    NodeId nStemId = -1;
-
-    LOCK(cs_main);
-
-    // Do not consider the sender
-    std::vector<NodeId> vStemNodesExceptSender;
-    std::copy_if(vStemNodes.begin(), vStemNodes.end(), std::back_inserter(vStemNodesExceptSender), [nFrom](NodeId id){return id != nFrom;} );
-
-    if (vStemNodesExceptSender.empty()) {
+    if (pfrom == NULL)
+    {
+        // Transaction should not be embargoed
         RelayTransaction(tx, connman);
         return;
     }
 
-    
+    // Transaction has been embargoed
 
-    // Does this transaction depend on any embargoed transactions?
-    BOOST_FOREACH(const CTxIn& txin, tx.vin) {
-        auto itEmbargo = mapEmbargo.find(txin.prevout.hash);
-        if (itEmbargo != mapEmbargo.end()) {
-            LogPrint(BCLog::NET, "Parent of %s was embargoed: %s\n", hash.ToString(),
-                     txin.prevout.hash.ToString());
-            fEmbargoedParent = true;
-            if (itEmbargo->second.itExpire != mapEmbargoExpire.end()) {
-                parentEmbargoTime = std::max(parentEmbargoTime+1, itEmbargo->second.itExpire->first);
-            } else
-                LogPrint(BCLog::NET, "assertion failed: no embargo time for parent %s\n", txin.prevout.hash.ToString());
+    // Get the node with the correct node ID to actually relay the transaction to.
+    CNode* pto = NULL;
+    connman.ForEachNode([&pto, nStemId](CNode* pnode)
+    {
+        if (pnode->GetId() == nStemId)
+        {
+            pto = pnode;
         }
-    }
+    });
 
-    if (!fEmbargoedParent) {
-        int64_t dand_prob = GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT);
-        fCoinflip = GetRand(100) < dand_prob;
-        LogPrint(BCLog::NET, "Coin flip was %s for transaction hash=%s\n", fCoinflip,
-                 hash.ToString());
-    }
+    if (pto)
+    {
+        uint256 hash = tx.GetHash();
 
-    if (fEmbargoedParent || fCoinflip) {
-        nStemId = vStemNodesExceptSender[GetRand(vStemNodesExceptSender.size())];
+        if (pto->GetId() == pfrom->GetId())
+        {
+            // TODO - what is the expected behavior here? Check to see if this case is even possible.
+            LogPrint(BCLog::NET, "[dandelion] tx=%s has same from and to nodes nodeId=%d\n", hash.ToString(), pfrom->GetId());
+        }
 
-        int64_t nNow = GetTimeMicros();
-        int64_t embargoTime = PoissonNextSend(nNow, EMBARGO_MEAN_DELAY) + EMBARGO_FIXED_DELAY * 1000000; 
-        embargoTime = std::max(embargoTime, parentEmbargoTime+1);
-        auto it = mapEmbargoExpire.insert(std::make_pair(embargoTime, hash));
-        CDandelionEmbargo emb = { it, nStemId };
-        LogPrint(BCLog::NET, "dandelion: tx embargoed tx=%s,%d\n", hash.ToString(), embargoTime);
-        mapEmbargo.insert(std::make_pair(hash, emb));
-        CInv inv(MSG_DANDELION_TX, hash);
+        std::vector<CInv> vInv;
+        vInv.reserve(1);
+        const CNetMsgMaker msgMaker(pto->GetSendVersion());
 
-        CNode* pto = NULL;
-        connman.ForEachNode([&pto, &fRelayed, nStemId](CNode* pnode) {
-            if (pnode->GetId() == nStemId) {
-                pto = pnode;
-            }
-        });
+        // TODO - Should this case be here? Do we want to skip sending a transaction if this node
+        // knows that another node already has received a non-dandelion version the transaction
+        if (pto->filterInventoryKnown.contains(hash)) return;
 
-        if (pto) {
-            std::vector<CInv> vInv;
-            vInv.reserve(1);
-            const CNetMsgMaker msgMaker(pto->GetSendVersion());
-            std::vector<std::set<uint256>::iterator> vInvTx;
-            vInvTx.reserve(1);
-            CAmount filterrate = 0;
-            {
-                LOCK(pto->cs_feeFilter);
-                filterrate = pto->minFeeFilter;
-            }
-            if (pto->filterInventoryKnown.contains(hash))
-                return;
+        // Transaction is known to be embargoed.
+        if (pto->isDandelion())
+        {
+            LogPrint(BCLog::NET, "[dandelion] relayed dandelion tx=%s from nodeId=%d to nodeId=%d\n", hash.ToString(), pfrom->GetId(), pto->GetId());
+            vInv.push_back(CInv(MSG_DANDELION_TX, hash));
+            pfrom->AddDandelionTxToRelay(tx);
 
-            auto txinfo = mempool.info(hash);
-            if (!txinfo.tx)
-                return;
-
-            auto itEmbargo = mapEmbargo.find(hash);
-            if (pto->isDandelion() && itEmbargo != mapEmbargo.end() && pto->GetId() == itEmbargo->second.stemId) {
-                LogPrint(BCLog::NET, "dandelion: relayed dandelion tx=%s\n", hash.ToString());
-                vInv.push_back(CInv(MSG_DANDELION_TX, hash));
-                fRelayed = true;
-            } else {
-                fRelayed = false;
-                LogPrint(BCLog::NET, "dandelion: relayed as regular inv, tx=%s\n", hash.ToString());
-                RelayTransaction(tx, connman);
-                return;
-//                vInv.push_back(CInv(MSG_TX, hash));    
-            }
-            LogPrint(BCLog::NET, "dandelion: Adding to map relay tx=%s\n", inv.hash.ToString());
-            {
-                auto ret = mapRelay.insert(std::make_pair(hash, std::move(txinfo.tx)));
-                if (!ret.second)
-                    LogPrint(BCLog::NET, "dandelion: not inserted into map relay, tx=%s\n", hash.ToString());
-            }
+            // Send the transaction along the stem
             connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
             vInv.clear();
-            if (itEmbargo == mapEmbargo.end())
-                pto->filterInventoryKnown.insert(hash);
-        }
-    }
 
-    if (fRelayed) {
-        LogPrint(BCLog::NET, "relaying dandelion tx %s to %d\n", hash.ToString(), nStemId);
-    } else {
-        RelayTransaction(tx, connman);
+        }
+        else
+        {
+            LogPrint(BCLog::NET, "[dandelion] relayed as regular inv, tx=%s\n", hash.ToString());
+            RelayTransaction(tx, connman);
+            return;
+        }
     }
 }
 
@@ -1274,21 +1201,48 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                 // to this peer, or if embargo ended
                 auto mi = mapRelay.find(inv.hash);
                 int nSendFlags = ((inv.type == MSG_TX || inv.type == MSG_DANDELION_TX) ? SERIALIZE_TRANSACTION_NO_WITNESS : 0);
-                auto embargo = mapEmbargo.find(inv.hash);
-                bool fEmbargoed = embargo != mapEmbargo.end();
-                if (mi != mapRelay.end()) {
+
+                // fValidStem Will be set to true if the transaction hash corresponds to an embargoed dandelion
+                // transaction pfrom is a stem node the transaction was actaully relayed to.
+
+                // INVARIANT: If fValidStem is true then fEmbargoed MUST also be true
+                bool fEmbargoed = false;
+                bool fValidStem = false;
+
+                connman.ForEachNode([&pfrom, &fEmbargoed, &fValidStem, &inv](CNode* pnode)
+                {
+                    // For both booleans they should be set to true if any node returns true for the corresponding functions
+
+                    bool isEmbargoed = pnode->DandelionTxIsEmbargoed(inv.hash);
+                    if (isEmbargoed) fEmbargoed = true;
+
+                    bool isValidStem = pnode->DandelionVerifyStemNode(inv.hash, pfrom->GetId());
+                    if (isValidStem) fValidStem = true;
+                });
+
+                if (mi != mapRelay.end())
+                {
+                    // Transaction is in the mapRelay so get its information from mapRelay to send
                     push = true;
-                    if (!fEmbargoed) {
-                        LogPrint(BCLog::NET, "tx=%s relayed as tx\n", inv.hash.ToString());
-                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
-                    }
-                    else if (pfrom->GetId() == embargo->second.stemId) {
-                        LogPrint(BCLog::NET, "tx=%s relayed as dandelion_tx\n", inv.hash.ToString());
-                        connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, pfrom->isDandelion() ? NetMsgType::DANDELIONTX : NetMsgType::TX, *mi->second));
-                    }
-                    else
-                        push = false;
-                } else if (!fEmbargoed && pfrom->timeLastMempoolReq) {
+
+                    // GetData for standard transaction that is not under embargo
+                    LogPrint(BCLog::NET, "tx=%s relayed as tx\n", inv.hash.ToString());
+                    connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
+                }
+                else if (fValidStem)
+                {
+                    // Transaction is in the mapDandelionRelay so get its information from mapRelay to send
+                    push = true;
+
+                    // GetData for Dandelion transaction by a valid stem node
+                    LogPrint(BCLog::NET, "tx=%s relayed as dandelion_tx\n", inv.hash.ToString());
+
+                    // TODO - get proper transaction data from mapDandelionRelay in CNode (net.h/net.cpp)
+                    // the parameter *mi->second will not work since the transaciton details will not be in mapRelay for Dandelion Transactions
+                    connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, pfrom->isDandelion() ? NetMsgType::DANDELIONTX : NetMsgType::TX, *mi->second));
+                }
+                else if (!fEmbargoed && pfrom->timeLastMempoolReq)
+                {
                     auto txinfo = mempool.info(inv.hash);
                     // To protect privacy, do not answer getdata using the mempool when
                     // that TX couldn't have been INVed in reply to a MEMPOOL request.
@@ -1296,10 +1250,14 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                         connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *txinfo.tx));
                         push = true;
                     }
-                } else {
-                    LogPrint(BCLog::NET, "dandelion: not foudn in mapRelay, tx=%s\n", inv.hash.ToString());
                 }
-                if (!push) {
+                else
+                {
+                    LogPrint(BCLog::NET, "dandelion: not found in mapRelay, tx=%s\n", inv.hash.ToString());
+                }
+
+                if (!push)
+                {
                     vNotFound.push_back(inv);
                 }
             }
@@ -1751,14 +1709,29 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             else
             {
                 // Skip adding to inventory for dandelion tx
-                if (inv.type == MSG_TX || inv.type == MSG_WITNESS_TX)
-                    pfrom->AddInventoryKnown(inv);
+                if (inv.type == MSG_TX || inv.type == MSG_WITNESS_TX) pfrom->AddInventoryKnown(inv);
+
+                /*
+                NEW NOTE: My current thinking is that this TODO is NOT needed, but look through the code and check yourself. I may be wrong.
+                MAYBE TODO - add data structure to store dandelion transactions
+
+                else if (inv.type == MSG_DANDELION_TX || inv.type == MSG_WITNESS_DANDELION_TX)
+                {
+                    pfrom -> add to peer structure that we have seen a dandelion transaction from this peer
+                }
+                */
+
                 if (fBlocksOnly) {
                     LogPrint(BCLog::NET, "transaction (%s) inv sent in violation of protocol peer=%d\n", inv.hash.ToString(), pfrom->GetId());
                 } else if (!fImporting && !fReindex && !IsInitialBlockDownload()) {
                     // Ask regardless if the tx is a dandelion stem
-                    bool fEmbargoed = mapEmbargo.find(inv.hash) != mapEmbargo.end();
-                    if (!fAlreadyHave || fEmbargoed) {
+
+                    //
+                    // TODO : Use mapDandelion Embargo
+                    //
+
+                    // bool fEmbargoed = mapEmbargo.find(inv.hash) != mapEmbargo.end();
+                    if (!fAlreadyHave /*|| fEmbargoed */) {
                         pfrom->AskFor(inv);
                     }
                 }
@@ -1985,7 +1958,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return true;
         }
 
-
+        // Don't add dandelion transactions to the node's inventory
         if (!fIsDandelion) pfrom->AddInventoryKnown(inv);
 
         LOCK(cs_main);
@@ -1996,20 +1969,20 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         pfrom->setAskFor.erase(inv.hash);
         mapAlreadyAskedFor.erase(inv.hash);
 
-        // Set the Dandelion embargo
-        bool isEmbargoed = mapEmbargo.find(inv.hash) != mapEmbargo.end();
+        // Check the Dandelion embargo
+        bool fEmbargoed = pfrom->DandelionTxIsEmbargoed(inv.hash);
 
         std::list<CTransactionRef> lRemovedTxn;
 
-        if (isEmbargoed && AlreadyHave(inv)) {
+        if (fEmbargoed && AlreadyHave(inv)) {
             // We have already processed this tx, can end embargo
             LogPrint(BCLog::NET, "dandelion tx leaving embargo: %s peer=%d\n", inv.hash.ToString(), pfrom->GetId());
             RelayTransaction(tx, connman);
         }
-        else if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn)) {
+        else if (!AlreadyHave(inv) && AcceptToMemoryPool(mempool, state, ptx, true, &fMissingInputs, &lRemovedTxn, fIsDandelion)) {
             mempool.check(pcoinsTip);
             if (fIsDandelion)
-                RelayTransactionDandelion(tx, connman, pfrom->GetId());
+                RelayTransactionDandelion(tx, connman, pfrom);
             else
                 RelayTransaction(tx, connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
@@ -2047,15 +2020,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
                     if (setMisbehaving.count(fromPeer))
                         continue;
+
+                    // Dandelilion transactions should NEVER be stored in mapOrphanTransactions so no need to check.
                     if (AcceptToMemoryPool(mempool, stateDummy, porphanTx, true, &fMissingInputs2, &lRemovedTxn)) {
                         LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
-                        bool fOrphanEmbargo = (mapEmbargo.find(orphanHash) != mapEmbargo.end());
-                        if (fOrphanEmbargo) {
-                            assert(mapEmbargo.find(orphanHash)->second.itExpire == mapEmbargoExpire.end());
-                            mapEmbargo.erase(orphanHash);
-                            RelayTransactionDandelion(orphanTx, connman, fromPeer);
-                        } else
-                            RelayTransaction(orphanTx, connman);
+                        RelayTransaction(orphanTx, connman);
                         for (unsigned int i = 0; i < orphanTx.vout.size(); i++) {
                             vWorkQueue.emplace_back(orphanHash, i);
                         }
@@ -2110,8 +2079,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 } else {
                     LogPrint(BCLog::NET, "orphan dandelion tx %s\n", tx.GetHash().ToString());
                     if (AddOrphanTx(ptx, pfrom->GetId())) {
-                        CDandelionEmbargo emb = { mapEmbargoExpire.end(), -1 };
-                        mapEmbargo.insert(std::make_pair(tx.GetHash(), emb));
+                        // TODO - figure out what to do here - would need to use mapDandelionEmbargo
+
+                        // CDandelionEmbargo emb = { mapEmbargoExpire.end(), -1 };
+                        // mapEmbargo.insert(std::make_pair(tx.GetHash(), emb));
                     }
                 }
 
@@ -2154,7 +2125,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 if (!state.IsInvalid(nDoS) || nDoS == 0) {
                     LogPrintf("Force relaying tx %s from whitelisted peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
                     if (fIsDandelion)
-                        RelayTransactionDandelion(tx, connman, pfrom->GetId());
+                        RelayTransactionDandelion(tx, connman, pfrom);
                     else
                         RelayTransaction(tx, connman);
                 } else {
@@ -2922,7 +2893,7 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& i
         return fMoreWork;
     }
     std::string strCommand = hdr.GetCommand();
-    
+
 
     // Message size
     unsigned int nMessageSize = hdr.nMessageSize;
@@ -3262,61 +3233,69 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
             pto->vBlockHashesToAnnounce.clear();
         }
 
+        /*** TODO: Hasn't been changed from dandelion-embargo branch. Needs to be done. Should call CNode::UpdateStem ***/
+
         //
         // Re-randomize the Dandelion stem set
         //
-        nNow = GetTimeMicros();
-        if (nNextDandelionReassign < nNow) {
-            if (nNextDandelionReassign == 0) {
-                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
-            } else {
-                nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
-            }
-            std::vector<NodeId> candidates;
-            connman.ForEachNode([&candidates](CNode* pnode) {
-                // TODO: further qualities to check?
-                if (!pnode->fInbound || pnode->fWhitelisted)
-                    candidates.push_back(pnode->GetId());
-            });
-            {
-                std::stringstream ss;
-                std::copy( candidates.begin(), candidates.end(), std::ostream_iterator<NodeId>(ss, " "));
-                LogPrint(BCLog::NET, "Shuffling dandelion candidates %s\n", ss.str().c_str());
-            }
-            vStemNodes.clear();
-            for (int i = 0; i < 2 && !candidates.empty(); i++) {
-                std::swap(candidates[GetRand(candidates.size())],
-                          candidates.back());
-                vStemNodes.push_back(candidates.back());
-                candidates.pop_back();
-            }
-            {
-                std::stringstream ss;
-                std::copy( vStemNodes.begin(), vStemNodes.end(), std::ostream_iterator<NodeId>(ss, " "));
-                LogPrint(BCLog::NET, "Dandelion nodes %s\n", ss.str().c_str());
-            }
-            if (vStemNodes.empty()) {
-                nNextDandelionReassign = nNow + 1 * 60 * 1000000;
-            }
-                
-        }
+
+
+        // nNow = GetTimeMicros();
+        // if (nNextDandelionReassign < nNow) {
+        //     if (nNextDandelionReassign == 0) {
+        //         nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+        //     } else {
+        //         nNextDandelionReassign = nNow + 10 * 60 * 1000000; // TODO: randomly choose?
+        //     }
+        //     std::vector<NodeId> candidates;
+        //     connman.ForEachNode([&candidates](CNode* pnode) {
+        //         // TODO: further qualities to check?
+        //         if (!pnode->fInbound || pnode->fWhitelisted)
+        //             candidates.push_back(pnode->GetId());
+        //     });
+        //     {
+        //         std::stringstream ss;
+        //         std::copy( candidates.begin(), candidates.end(), std::ostream_iterator<NodeId>(ss, " "));
+        //         LogPrint(BCLog::NET, "Shuffling dandelion candidates %s\n", ss.str().c_str());
+        //     }
+        //     vStemNodes.clear();
+        //     for (int i = 0; i < 2 && !candidates.empty(); i++) {
+        //         std::swap(candidates[GetRand(candidates.size())],
+        //                   candidates.back());
+        //         vStemNodes.push_back(candidates.back());
+        //         candidates.pop_back();
+        //     }
+        //     {
+        //         std::stringstream ss;
+        //         std::copy( vStemNodes.begin(), vStemNodes.end(), std::ostream_iterator<NodeId>(ss, " "));
+        //         LogPrint(BCLog::NET, "Dandelion nodes %s\n", ss.str().c_str());
+        //     }
+        //     if (vStemNodes.empty()) {
+        //         nNextDandelionReassign = nNow + 1 * 60 * 1000000;
+        //     }
+
+        // }
 
         //
         // Lifting Dandelion transaction embargo
         //
-        while (!mapEmbargoExpire.empty() && mapEmbargoExpire.begin()->first < nNow)
-        {
-            uint256 &hash = mapEmbargoExpire.begin()->second;
-            auto txinfo = mempool.info(hash);
-            if (txinfo.tx) {
-                LogPrint(BCLog::NET, "embargo expiring on %s\n", hash.ToString());
-                RelayTransaction(*txinfo.tx, connman);
-            } else {
-                LogPrint(BCLog::NET, "embargo expiring on non-mempool transaction %s\n", hash.ToString());
-                mapEmbargo.erase(hash);
-                mapEmbargoExpire.erase(mapEmbargoExpire.begin());
-            }
-        }
+
+        /*** TODO : Call function from net.cpp CNode::DandelionTxLiftEmbargo ***/
+
+        //
+        // while (!mapEmbargoExpire.empty() && mapEmbargoExpire.begin()->first < nNow)
+        // {
+        //     uint256 &hash = mapEmbargoExpire.begin()->second;
+        //     auto txinfo = mempool.info(hash);
+        //     if (txinfo.tx) {
+        //         LogPrint(BCLog::NET, "embargo expiring on %s\n", hash.ToString());
+        //         RelayTransaction(*txinfo.tx, connman);
+        //     } else {
+        //         LogPrint(BCLog::NET, "embargo expiring on non-mempool transaction %s\n", hash.ToString());
+        //         mapEmbargo.erase(hash);
+        //         mapEmbargoExpire.erase(mapEmbargoExpire.begin());
+        //     }
+        // }
 
         //
         // Message: inventory
@@ -3364,9 +3343,6 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
 
                 for (const auto& txinfo : vtxinfo) {
                     const uint256& hash = txinfo.tx->GetHash();
-                    // Omit embargoed transactions from mempool response
-                    if (mapEmbargo.find(hash) != mapEmbargo.end())
-                        continue;
                     CInv inv(MSG_TX, hash);
                     pto->setInventoryTxToSend.erase(hash);
                     if (filterrate) {
@@ -3413,7 +3389,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                     std::set<uint256>::iterator it = vInvTx.back();
                     vInvTx.pop_back();
                     uint256 hash = *it;
-                    LogPrint(BCLog::NET, "tx=%s being added to maprelay\n", hash.ToString()); 
+                    LogPrint(BCLog::NET, "tx=%s being added to maprelay\n", hash.ToString());
                     // Remove it from the to-be-sent set
                     pto->setInventoryTxToSend.erase(it);
                     // Check if not in the filter already
@@ -3430,10 +3406,13 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                     }
                     if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     // Send
-                    auto itEmbargo = mapEmbargo.find(hash);
-                    if (pto->isDandelion() && itEmbargo != mapEmbargo.end() && pto->GetId() == itEmbargo->second.stemId)
-                        vInv.push_back(CInv(MSG_DANDELION_TX, hash));
-                    else
+
+                    /*** TODO : Handle sending Dandelion transactions ***/
+
+                    // auto itEmbargo = mapEmbargo.find(hash);
+                    // if (pto->isDandelion() && itEmbargo != mapEmbargo.end() && pto->GetId() == itEmbargo->second.stemId)
+                    //     vInv.push_back(CInv(MSG_DANDELION_TX, hash));
+                    // else
                         vInv.push_back(CInv(MSG_TX, hash));
                     nRelayedTransactions++;
                     {
@@ -3443,6 +3422,8 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                             mapRelay.erase(vRelayExpiration.front().second);
                             vRelayExpiration.pop_front();
                         }
+
+                        /*** TODO : Don't add dandelion transactions into mapRelay ***/
 
                         LogPrintf("Adding to mapRelay %s\n", hash.ToString());
                         auto ret = mapRelay.insert(std::make_pair(hash, std::move(txinfo.tx)));
@@ -3454,8 +3435,11 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
                         connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
                         vInv.clear();
                     }
-                    if (itEmbargo == mapEmbargo.end())
-                        pto->filterInventoryKnown.insert(hash); // Skip filter for dandelion
+
+                    /*** TODO : different check is needed to see if a dandelion node is under embargo ***/
+
+                    // if (itEmbargo == mapEmbargo.end())
+                    //     pto->filterInventoryKnown.insert(hash); // Skip filter for dandelion
                 }
             }
         }
@@ -3516,7 +3500,10 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
         while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)
         {
             const CInv& inv = (*pto->mapAskFor.begin()).second;
-            if (!AlreadyHave(inv) || mapEmbargo.find(inv.hash) != mapEmbargo.end())
+
+            /*** TODO : switch to useing per node mapEmbargo ***/
+
+            if (!AlreadyHave(inv) /* || mapEmbargo.find(inv.hash) != mapEmbargo.end() */)
             {
                 LogPrint(BCLog::NET, "Requesting %s peer=%d\n", inv.ToString(), pto->GetId());
                 vGetData.push_back(inv);

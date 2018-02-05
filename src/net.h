@@ -16,6 +16,7 @@
 #include "netaddress.h"
 #include "policy/feerate.h"
 #include "protocol.h"
+#include "primitives/transaction.h"
 #include "random.h"
 #include "streams.h"
 #include "sync.h"
@@ -94,6 +95,11 @@ static const ServiceFlags REQUIRED_SERVICES = NODE_NETWORK;
 
 // NOTE: When adjusting this, update rpcnet:setban's help ("24h")
 static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Default 24-hour ban
+
+/** Fixed delay for Dandelion embargo in seconds */
+static const int64_t EMBARGO_FIXED_DELAY = 10;
+/** Mean delay for Dandelion embargo in seconds, after the fixed delay */
+static const int64_t EMBARGO_MEAN_DELAY = 30;
 
 typedef int64_t NodeId;
 
@@ -643,8 +649,37 @@ public:
     // Set of transaction ids we still have to announce.
     // They are sorted by the mempool before relay, so the order is not important.
     std::set<uint256> setInventoryTxToSend;
-    // dandelion relay
-    std::set<uint256> setStemTx;
+
+    // Dandelion stem handling
+    // Protected by cs_inventory
+    typedef std::multimap<int64_t, uint256> MapEmbargo;
+    MapEmbargo mapEmbargoExpire;
+    // mapEmbargoExpire maps the times transactions expire to the transactions that expire at that time.
+    struct CDandelionEmbargo {
+        // The iterator for the corresponding entry in mapEmbargoExpire.
+        MapEmbargo::iterator itExpire;
+
+        // Stem nodes that the transaction was relayed to. Empty set if not relayed yet.
+        // Used to know the nodes whose GetData requests should be responded to.
+        std::set<NodeId> setStemRelays;
+    };
+
+    // Store of dandelion transaction while they are in embargo.
+    // INVARIANT: only transactions currently embargoed are in mapDandelionRelay
+    // Protected by cs_inventory
+    std::map<uint256, CTransaction> mapDandelionRelay;
+
+    // Invariant: if tx is in mapEmbargo, then either
+    //   - tx is in mapOrphanTransactions, or
+    //   - tx.itExpire != mapEmbargoExpire.end()
+    std::map<uint256, CDandelionEmbargo> mapEmbargo;
+
+    // Protected by cs_inventory
+    // nCurrStem is the current node to forward dandelion transactions to that
+    // were sent by this node. If nRouteId is changed then all transactions still
+    // in mapEmbargo MUST be resent along the new stem.
+    NodeId nCurrStem;
+
     // List of block ids we still have announce.
     // There is no final sorting before sending, as they are always sent immediately
     // and in the order requested.
@@ -773,6 +808,77 @@ public:
         }
     }
 
+    /**
+     * Check if a transaction is in the node's embargo map.
+     *
+     * @param[in]   hash        Transaction hash to check.
+     * @return                  True if the transaction is embargoed.
+     */
+    bool DandelionTxIsEmbargoed(uint256 hash);
+
+    /**
+     * Lift the embargo on transactions that were previously embargoed, but are now past their embargo time.
+     *
+     * @return          Vector of transaction hashes for transactions that had their embargo lifted.
+     *                  Those transactions should be relayed to all nodes normally
+     */
+    std::vector<uint256> DandelionTxLiftEmbargo();
+    // TODO: intended to be called in SendMessasges() in net_processing.cpp
+    //       to keep the embargo map in a proper state
+
+    /**
+     * Forcably lift the embargo on a transaction. For instance this should be used when recieving a
+     * the same transaction sent as a normal transaction in the fluff phase indication that the embargo
+     * should be over.
+     *
+     * @param[in] hash  Transaction hash for the transaction to remove from embargo
+     */
+    void DandelionTxRemoveEmbargo(uint256 hash);
+
+    /**
+     * Setup the relay for a dandelion transaction. This will embargo the transaction if necessary.
+     * Should be called before the transaction is relayed to do setup within the node and to get the ID
+     * of the node to relay the transaction to.
+     *
+     * @param[in]   tx          Dandelion transaction to potentially embargo.
+     * @return                  Node ID to relay the transaction to if it is going to remain in the stem phase,
+     *                          or -1 if it should be relayed normally via the fluff phase.
+     */
+    NodeId DandelionTxSetupRelay(const CTransaction& tx);
+
+    /**
+     * Check if a dandelion transaction was sent to a particular node belived to be in the stem.
+     *
+     * @param[in]  hash         Transaction hash to check.
+     * @param[in]  stemId       Node ID of the node that is susspected to be a part of the stem that
+     *                          the transaction was sent along.
+     * @return                  True if the transaction is a dandelion transacion under embargo that was
+     *                          relayed to the stem node at some point.
+     */
+    bool DandelionVerifyStemNode(uint256 hash, NodeId stemId);
+
+    /**
+     * Add a transaction to dandelion map relay.
+     *
+     * @param tx                Transaction to add.
+     */
+    void AddDandelionTxToRelay(const CTransaction& tx);
+
+    /**
+     * Remove a transaction from the dandelion map relay.
+     *
+     * @param tx                Transaction to remove.
+     */
+    void RemoveDandelionTxFromRelay(uint256 hash);
+
+    /**
+     * Updates the current stem node that dandelion transactions sent from this node should be forwarded to.
+     *
+     * @param[in] stemId        New node ID for the new stem node to route transactions
+     *                          to that originate from this node.
+     * @return                  Vector of transaction hashes that should be relayed to the new stem node.
+     */
+    std::vector<uint256> UpdateStem(NodeId stemId);
 
     void AddInventoryKnown(const CInv& inv)
     {
@@ -828,6 +934,6 @@ public:
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
 int64_t PoissonNextSend(int64_t nNow, int average_interval_seconds);
 
-void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, NodeId from);
+void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, CNode* pfrom);
 
 #endif // BITCOIN_NET_H

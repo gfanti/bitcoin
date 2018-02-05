@@ -2719,6 +2719,190 @@ CNode::~CNode()
         delete pfilter;
 }
 
+bool CNode::DandelionTxIsEmbargoed(uint256 hash)
+{
+    LOCK(cs_inventory);
+    auto itEmbargo = mapEmbargo.find(hash);
+    return itEmbargo != mapEmbargo.end();
+}
+
+std::vector<uint256> CNode::DandelionTxLiftEmbargo()
+{
+    LOCK(cs_inventory);
+
+    // Lifting Dandelion transaction embargo
+    // TODO - remove from SendMessages() in net_processing.cpp
+
+    std::vector<uint256> liftedTxHashes;
+    int64_t nNow = GetTimeMicros();
+
+    while (!mapEmbargoExpire.empty() && mapEmbargoExpire.begin()->first < nNow)
+    {
+        uint256 hash = mapEmbargoExpire.begin()->second;
+        liftedTxHashes.push_back(hash);
+        LogPrint(BCLog::NET, "[dandelion] embargo expiring for tx=%s\n", hash.ToString());
+
+        RemoveDandelionTxFromRelay(hash);
+        mapEmbargo.erase(hash);
+        mapEmbargoExpire.erase(mapEmbargoExpire.begin());
+    }
+
+    return liftedTxHashes;
+}
+
+void CNode::DandelionTxRemoveEmbargo(uint256 hash)
+{
+    LOCK(cs_inventory);
+
+    RemoveDandelionTxFromRelay(hash);
+
+    auto itRelay = mapDandelionRelay.find(hash);
+    if (itRelay != mapDandelionRelay.find(hash))
+    {
+        mapDandelionRelay.erase(itRelay);
+    }
+
+    auto it = mapEmbargo.find(hash);
+    if (it != mapEmbargo.end())
+    {
+        if (it->second.itExpire != mapEmbargoExpire.end())
+        {
+            mapEmbargoExpire.erase(it->second.itExpire);
+        }
+        mapEmbargo.erase(it);
+
+        LogPrint(BCLog::NET, "[dandelion] embargo removed for tx=%s\n", hash.ToString());
+    }
+}
+
+NodeId CNode::DandelionTxSetupRelay(const CTransaction& tx)
+{
+    uint256 hash = tx.GetHash();
+    int64_t parentEmbargoTime = 0;
+    bool fEmbargoedParent = false;
+    bool fCoinflip = false;
+
+    LOCK(cs_inventory);
+
+    // Check if this transaction depends on any embargoed transactions
+    BOOST_FOREACH(const CTxIn& txin, tx.vin) {
+        auto itEmbargo = mapEmbargo.find(txin.prevout.hash);
+        if (itEmbargo != mapEmbargo.end())
+        {
+            LogPrint(BCLog::NET, "[dandelion] parent of %s was embargoed (NodeId=%d): %s\n", hash.ToString(),
+                     id, txin.prevout.hash.ToString());
+            fEmbargoedParent = true;
+            if (itEmbargo->second.itExpire != mapEmbargoExpire.end())
+            {
+                // Make sure the child embargo time is longer than its parent
+                parentEmbargoTime = std::max(parentEmbargoTime+1, itEmbargo->second.itExpire->first);
+            }
+            else
+            {
+                LogPrint(BCLog::NET, "[dandelion] assertion failed: no embargo time for parent %s\n", txin.prevout.hash.ToString());
+            }
+        }
+    }
+
+    // Dandelion coin flip to check if the transaction should continue in the stem phase
+    if (!fEmbargoedParent)
+    {
+        int64_t dand_prob = GetArg("-dandelion", DEFAULT_DANDELION_PROB_PCT);
+        fCoinflip = ((int64_t) GetRand(100)) < dand_prob;
+        LogPrint(BCLog::NET, "[dandelion] coinflip=%s for transaction hash=%s\n",
+                fCoinflip ? "true" : "false", hash.ToString());
+    }
+
+    // Check if the transaction needs to be embargoed and should continue in the stem phase
+    if (fEmbargoedParent || fCoinflip)
+    {
+        int64_t nNow = GetTimeMicros();
+        int64_t embargoTime = PoissonNextSend(nNow, EMBARGO_MEAN_DELAY) + EMBARGO_FIXED_DELAY * 1000000;
+        embargoTime = std::max(embargoTime, parentEmbargoTime+1);
+
+        // Add the transaction to the map of expire times for embargoed transactions
+        auto it = mapEmbargoExpire.insert(std::make_pair(embargoTime, hash));
+
+        // Create the set to use in the CDandelionEmbargo struct
+        std::set<NodeId> setStemRelays;
+        setStemRelays.insert(nCurrStem);
+
+        CDandelionEmbargo emb = { it, setStemRelays };
+        LogPrint(BCLog::NET, "[dandelion] tx embargoed (NodeId=%d): tx=%s,time=%d\n", id, hash.ToString(), embargoTime);
+
+        // Add the transaction to the embargo
+        mapEmbargo.insert(std::make_pair(hash, emb));
+
+        return nCurrStem;
+    }
+
+    return -1;
+}
+
+bool CNode::DandelionVerifyStemNode(uint256 hash, NodeId stemId)
+{
+    LOCK(cs_inventory);
+
+    auto it = mapEmbargo.find(hash);
+    if (it != mapEmbargo.end())
+    {
+        CDandelionEmbargo embargo = it->second;
+        return embargo.setStemRelays.find(stemId) != embargo.setStemRelays.end();
+    }
+
+    return false;
+}
+
+void CNode::AddDandelionTxToRelay(const CTransaction& tx)
+{
+    uint256 hash = tx.GetHash();
+
+    LOCK(cs_inventory);
+    auto ret = mapDandelionRelay.insert(std::make_pair(hash, std::move(tx)));
+
+    if (ret.second)
+        LogPrint(BCLog::NET, "[dandelion] inserted into map relay, tx=%s\n", hash.ToString());
+    else
+        LogPrint(BCLog::NET, "[dandelion] not inserted into map relay, tx=%s\n", hash.ToString());
+}
+
+void CNode::RemoveDandelionTxFromRelay(uint256 hash)
+{
+    LOCK(cs_inventory);
+    auto it = mapDandelionRelay.find(hash);
+
+    if (it != mapDandelionRelay.end())
+    {
+        mapDandelionRelay.erase(it);
+    }
+}
+
+std::vector<uint256> CNode::UpdateStem(NodeId stemId)
+{
+    LOCK(cs_inventory);
+    nCurrStem = stemId;
+
+    std::vector<uint256> vRelayTx;  // Currently embargoed transactions to relay to the new stem
+
+    for (auto it = mapEmbargo.begin(); it != mapEmbargo.end(); ++it)
+    {
+        CDandelionEmbargo *embargo = &(it->second);
+
+        // TODO - is this check needed or should the transaction be sent again anyways
+        if (embargo->setStemRelays.find(stemId) == embargo->setStemRelays.end())
+        {
+            // New stem node was never previously sent the transaction.
+            // Add the new stem ID to the list of
+            embargo->setStemRelays.insert(stemId);
+
+            // Add the tx hash to the list of transactions to relay.
+            vRelayTx.push_back(it->first);
+        }
+    }
+
+    return vRelayTx;
+}
+
 void CNode::AskFor(const CInv& inv)
 {
     if (mapAskFor.size() > MAPASKFOR_MAX_SZ || setAskFor.size() > SETASKFOR_MAX_SZ)
@@ -2827,4 +3011,4 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& ad) const
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(&vchNetGroup[0], vchNetGroup.size()).Finalize();
 }
 
-extern void RelayTransactionDandelion(const CTransaction& tx, CConnman* connman);
+extern void RelayTransactionDandelion(const CTransaction& tx, CConnman& connman, CNode* pfrom);

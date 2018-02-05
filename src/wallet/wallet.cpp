@@ -1563,7 +1563,7 @@ bool CWalletTx::RelayWalletTransaction(CConnman* connman)
         if (InMempool() || AcceptToMemoryPool(maxTxFee, state)) {
             LogPrintf("Relaying wtx %s\n", GetHash().ToString());
             if (connman) {
-                RelayTransactionDandelion(*this, *connman, -1);
+                RelayTransactionDandelion(*this, *connman, NULL);
             }
         }
     }
